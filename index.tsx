@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { 
@@ -93,12 +94,11 @@ const parseDateRobust = (dateStr: string): string => {
   const s = dateStr.trim();
   
   // Tenta o formato DD/MM/AAAA (com ou sem hora)
-  // Regex aceita barras ou traços como separadores
   const dmyMatch = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   
   if (dmyMatch) {
     const day = parseInt(dmyMatch[1], 10);
-    const month = parseInt(dmyMatch[2], 10) - 1; // 0-indexed
+    const month = parseInt(dmyMatch[2], 10) - 1; 
     let year = parseInt(dmyMatch[3], 10);
     if (year < 100) year += 2000;
     
@@ -106,8 +106,6 @@ const parseDateRobust = (dateStr: string): string => {
     const min = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 0;
     const sec = dmyMatch[6] ? parseInt(dmyMatch[6], 10) : 0;
     
-    // Cria data local. Em um ambiente configurado para o Brasil, 
-    // isso resultará no fuso horário correto.
     const d = new Date(year, month, day, hour, min, sec);
     if (!isNaN(d.getTime())) return d.toISOString();
   }
@@ -162,7 +160,6 @@ const App = () => {
   const itemsPerPage = 10;
   const fileInputRef = useRef<HTMLInputElement>(null);
   
-  // Filters
   const [filterStartDate, setFilterStartDate] = useState(''); 
   const [filterEndDate, setFilterEndDate] = useState('');     
   const [filterBico, setFilterBico] = useState('');
@@ -238,7 +235,6 @@ const App = () => {
         const row: any = {};
         headers.forEach((header, index) => { row[header] = values[index]; });
 
-        // Coluna 13 (index 12) é o ID do Frentista
         const frentistaId = values.length >= 13 ? values[12] : (row.id_frentista || row.frentista || 'N/A');
         
         const dateRaw = row.data || row.data_hora || row.date || row.timestamp;
