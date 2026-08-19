@@ -33,6 +33,8 @@ npm run check
 
 Esse comando executa a checagem TypeScript e o build de produção.
 
+O mesmo processo roda automaticamente no GitHub Actions a cada push e pull request por meio de `.github/workflows/ci.yml`.
+
 O arquivo `styles.css` é uma folha estática de produção gerada a partir de `styles.source.css`. Para regenerá-lo com o executável oficial do Tailwind CSS:
 
 ```bash
