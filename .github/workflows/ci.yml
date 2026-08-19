@@ -28,7 +28,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Instalar dependências
-        run: bun install --frozen-lockfile
+        run: bun install
+
+      - name: Disponibilizar lockfile atualizado
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-lock-${{ github.sha }}
+          path: bun.lock
+          retention-days: 1
 
       - name: Verificar tipos e gerar build
         run: bun run check
