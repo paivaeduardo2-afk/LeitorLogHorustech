@@ -33,6 +33,12 @@ npm run check
 
 Esse comando executa a checagem TypeScript e o build de produção.
 
+O arquivo `styles.css` é uma folha estática de produção gerada a partir de `styles.source.css`. Para regenerá-lo com o executável oficial do Tailwind CSS:
+
+```bash
+tailwindcss -i styles.source.css -o styles.css --minify
+```
+
 ## Formatos esperados
 
 ### Horustech
@@ -61,6 +67,6 @@ A primeira coluna deve conter o nome. Os cartões podem ocupar as três colunas 
 
 ## Privacidade e limitações
 
-Os dados são armazenados em `localStorage`, portanto pertencem ao navegador e ao perfil em uso. Limpar os dados do navegador também remove os dados do painel. Para uso simultâneo por vários usuários, histórico centralizado, permissões reais ou backup automático, será necessário adicionar uma API com banco de dados e autenticação.
+Os abastecimentos e funcionários são armazenados em IndexedDB, que comporta arquivos maiores que o antigo `localStorage`. Na primeira abertura, os dados existentes são migrados automaticamente. Eles continuam pertencendo ao navegador e ao perfil em uso; limpar os dados do navegador também remove os dados do painel. Para uso simultâneo por vários usuários, histórico centralizado, permissões reais ou backup automático, será necessário adicionar uma API com banco de dados e autenticação.
 
 A tela inicial atual é apenas uma entrada para o painel local; ela não constitui autenticação de segurança.

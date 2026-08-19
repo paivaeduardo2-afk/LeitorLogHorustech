@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
+import { loadPersistedValue, persistValue } from './storage';
 import { 
   LogOut, 
   Trash2, 
@@ -400,6 +401,36 @@ const isMeaningfulRefueling = (item: Refueling): boolean => Boolean(
   && (item.litros > 0 || item.valor > 0 || (item.enc_final ?? 0) > 0)
 );
 
+const normalizePersistedRefuelings = (value: unknown): Refueling[] => {
+  if (!Array.isArray(value)) return [];
+
+  return value.map((item, index) => {
+    const encInicial = parseNumericValue(item.enc_inicial);
+    const encFinal = parseNumericValue(item.enc_final);
+    const rawVolume = item.rawVolumeOriginal !== undefined ? parseNumericValue(item.rawVolumeOriginal) : parseNumericValue(item.litros);
+    const rawTotal = item.rawTotalOriginal !== undefined ? parseNumericValue(item.rawTotalOriginal) : parseNumericValue(item.valor);
+    const rawPreco = item.rawPrecoOriginal !== undefined ? parseNumericValue(item.rawPrecoOriginal) : parseNumericValue(item.preco_unitario);
+    const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
+
+    return {
+      ...item,
+      linhaPlanilha: item.linhaPlanilha || (index + 2),
+      registro: item.registro || '',
+      litros: volume,
+      valor: valorTotal,
+      preco_unitario: precoUnitario,
+      enc_inicial: encInicial,
+      enc_final: encFinal,
+      origemVolumeVazio: item.origemVolumeVazio !== undefined ? item.origemVolumeVazio : rawVolume <= 0,
+      origemTotalVazio: item.origemTotalVazio !== undefined ? item.origemTotalVazio : rawTotal <= 0,
+      origemPrecoVazio: item.origemPrecoVazio !== undefined ? item.origemPrecoVazio : rawPreco <= 0,
+      rawVolumeOriginal: rawVolume,
+      rawTotalOriginal: rawTotal,
+      rawPrecoOriginal: rawPreco
+    } as Refueling;
+  });
+};
+
 // --- Components ---
 
 const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose: () => void, title: string, children?: React.ReactNode }) => {
@@ -414,7 +445,7 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
 
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4" role="presentation">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="presentation">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
           <h3 id="modal-title" className="text-lg font-bold text-gray-800">{title}</h3>
@@ -472,67 +503,47 @@ const App = () => {
   const inconsistenciesPerPage = 15;
 
   useEffect(() => {
-    try {
-      const savedData = localStorage.getItem('abastecimentos_data');
-      if (savedData) {
-        const parsed = JSON.parse(savedData);
-        if (Array.isArray(parsed)) {
-          // Re-processa dados existentes caso tenham linhas com volume ou total zerados/vazios
-          const normalized = parsed.map((item, idx) => {
-            const encIni = parseNumericValue(item.enc_inicial);
-            const encFin = parseNumericValue(item.enc_final);
-            const rawVol = item.rawVolumeOriginal !== undefined ? parseNumericValue(item.rawVolumeOriginal) : parseNumericValue(item.litros);
-            const rawTot = item.rawTotalOriginal !== undefined ? parseNumericValue(item.rawTotalOriginal) : parseNumericValue(item.valor);
-            const rawPrc = item.rawPrecoOriginal !== undefined ? parseNumericValue(item.rawPrecoOriginal) : parseNumericValue(item.preco_unitario);
-            const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVol, rawTot, rawPrc, encIni, encFin);
-            
-            const origemVolVazio = item.origemVolumeVazio !== undefined ? item.origemVolumeVazio : (rawVol <= 0);
-            const origemTotVazio = item.origemTotalVazio !== undefined ? item.origemTotalVazio : (rawTot <= 0);
-            const origemPrcVazio = item.origemPrecoVazio !== undefined ? item.origemPrecoVazio : (rawPrc <= 0);
+    let isCancelled = false;
 
-            return {
-              ...item,
-              linhaPlanilha: item.linhaPlanilha || (idx + 2),
-              registro: item.registro || '',
-              litros: volume,
-              valor: valorTotal,
-              preco_unitario: precoUnitario,
-              enc_inicial: encIni,
-              enc_final: encFin,
-              origemVolumeVazio: origemVolVazio,
-              origemTotalVazio: origemTotVazio,
-              origemPrecoVazio: origemPrcVazio,
-              rawVolumeOriginal: rawVol,
-              rawTotalOriginal: rawTot,
-              rawPrecoOriginal: rawPrc
-            };
-          });
-          setData(normalized);
+    const hydrateApplication = async () => {
+      try {
+        const [dataResult, employeesResult] = await Promise.allSettled([
+          loadPersistedValue<Refueling[]>('refuelings', 'abastecimentos_data'),
+          loadPersistedValue<Employee[]>('employees', 'posto_employees')
+        ]);
+        if (isCancelled) return;
+
+        if (dataResult.status === 'fulfilled') {
+          setData(normalizePersistedRefuelings(dataResult.value));
+        } else {
+          console.error('Error loading refuelings', dataResult.reason);
+          setNotice({ type: 'warning', message: 'Os abastecimentos salvos anteriormente não puderam ser carregados.' });
         }
-      }
-    } catch (e) {
-      console.error("Error loading abastecimentos_data", e);
-      setNotice({ type: 'warning', message: 'Os dados salvos anteriormente não puderam ser carregados.' });
-    }
 
-    try {
-      const savedEmployees = localStorage.getItem('posto_employees');
-      if (savedEmployees) {
-        const parsed = JSON.parse(savedEmployees);
-        if (Array.isArray(parsed)) setEmployees(parsed);
-      }
-    } catch (e) { console.error("Error loading posto_employees", e); }
+        if (employeesResult.status === 'fulfilled' && Array.isArray(employeesResult.value)) {
+          setEmployees(employeesResult.value);
+        } else if (employeesResult.status === 'rejected') {
+          console.error('Error loading employees', employeesResult.reason);
+          setNotice({ type: 'warning', message: 'A lista de funcionários salva anteriormente não pôde ser carregada.' });
+        }
 
-    try {
-      const savedUser = localStorage.getItem('abastecimentos_user');
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser);
-        if (parsedUser && parsedUser.role === 'admin') setCurrentUser(parsedUser);
-        else localStorage.removeItem('abastecimentos_user');
+        const savedUser = localStorage.getItem('abastecimentos_user');
+        if (savedUser) {
+          const parsedUser = JSON.parse(savedUser) as AppUser;
+          if (parsedUser?.role === 'admin') setCurrentUser(parsedUser);
+          else localStorage.removeItem('abastecimentos_user');
+        }
+      } catch (error) {
+        console.error('Error hydrating application data', error);
+        if (!isCancelled) {
+          setNotice({ type: 'warning', message: 'Os dados salvos anteriormente não puderam ser carregados.' });
+        }
+      } finally {
+        if (!isCancelled) setIsHydrated(true);
       }
-    } catch (e) { console.error("Error loading abastecimentos_user", e); }
+    };
 
-    setIsHydrated(true);
+    void hydrateApplication();
 
     const handleClickOutside = (event: MouseEvent) => {
       if (frentistaDropdownRef.current && !frentistaDropdownRef.current.contains(event.target as Node)) {
@@ -540,27 +551,26 @@ const App = () => {
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    return () => {
+      isCancelled = true;
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   useEffect(() => {
     if (!isHydrated) return;
-    try {
-      localStorage.setItem('abastecimentos_data', JSON.stringify(data));
-    } catch (error) {
-      console.error('Error saving abastecimentos_data', error);
-      setNotice({ type: 'error', message: 'O navegador ficou sem espaço para salvar os abastecimentos. Exporte ou limpe dados antigos.' });
-    }
+    void persistValue('refuelings', 'abastecimentos_data', data).catch(error => {
+      console.error('Error saving refuelings', error);
+      setNotice({ type: 'error', message: 'O navegador não conseguiu salvar os abastecimentos. Exporte ou limpe dados antigos.' });
+    });
   }, [data, isHydrated]);
 
   useEffect(() => {
     if (!isHydrated) return;
-    try {
-      localStorage.setItem('posto_employees', JSON.stringify(employees));
-    } catch (error) {
-      console.error('Error saving posto_employees', error);
+    void persistValue('employees', 'posto_employees', employees).catch(error => {
+      console.error('Error saving employees', error);
       setNotice({ type: 'error', message: 'Não foi possível salvar a lista de funcionários neste navegador.' });
-    }
+    });
   }, [employees, isHydrated]);
 
   useEffect(() => {
@@ -1381,6 +1391,17 @@ const App = () => {
   const cancelFrentistaSelection = () => {
     setIsFrentistaFilterOpen(false);
   };
+
+  if (!isHydrated) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-6" role="status" aria-live="polite">
+        <div className="flex flex-col items-center gap-4 text-indigo-700">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" aria-hidden="true" />
+          <p className="text-sm font-bold">Carregando dados do painel…</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!currentUser) {
     return (
@@ -2607,12 +2628,6 @@ const App = () => {
         </div>
       </Modal>
 
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
-      `}</style>
     </div>
   );
 };
