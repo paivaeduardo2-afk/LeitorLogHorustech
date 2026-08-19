@@ -1,8 +1,6 @@
 {
-  "description": "Leitor de log HORUSTECH com cálculo automático de volume e total a partir dos encerrantes",
+  "description": "Painel local para importar, conferir e auditar logs de abastecimento Horustech, Concept e Hiro",
   "requestFramePermissions": [],
   "name": "Leitor de log HORUSTECH",
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "majorCapabilities": []
 }

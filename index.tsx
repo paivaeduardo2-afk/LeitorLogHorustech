@@ -103,6 +103,16 @@ interface FrentistaGroup {
   count: number;
 }
 
+interface ImportStats {
+  sourceRows: number;
+  acceptedRows: number;
+}
+
+interface Notice {
+  type: 'success' | 'error' | 'warning';
+  message: string;
+}
+
 // --- Constants ---
 
 const MOCK_USERS: AppUser[] = [
@@ -232,24 +242,51 @@ const normalizeHeader = (header: string): string => {
     .trim();
 };
 
-const splitCSVLine = (line: string, delimiter: string): string[] => {
-  const result: string[] = [];
+const parseDelimitedText = (text: string, delimiter: string): string[][] => {
+  const rows: string[][] = [];
+  let row: string[] = [];
   let current = '';
   let inQuotes = false;
   
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
     if (char === '"') {
-      inQuotes = !inQuotes;
+      if (inQuotes && text[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
     } else if (char === delimiter && !inQuotes) {
-      result.push(current.trim());
+      row.push(current.trim());
+      current = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && text[i + 1] === '\n') i += 1;
+      row.push(current.trim());
+      if (row.some(value => value !== '')) rows.push(row);
+      row = [];
       current = '';
     } else {
       current += char;
     }
   }
-  result.push(current.trim());
-  return result.map(v => v.replace(/^["']|["']$/g, '').trim());
+  row.push(current.trim());
+  if (row.some(value => value !== '')) rows.push(row);
+  return rows;
+};
+
+const countDelimiterOutsideQuotes = (line: string, delimiter: string): number => {
+  let count = 0;
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index += 1) {
+    if (line[index] === '"') {
+      if (inQuotes && line[index + 1] === '"') index += 1;
+      else inQuotes = !inQuotes;
+    } else if (!inQuotes && line[index] === delimiter) {
+      count += 1;
+    }
+  }
+  return count;
 };
 
 const findCol = (row: Record<string, any>, values: string[], aliases: string[], fallbackIndex?: number): any => {
@@ -265,10 +302,20 @@ const findCol = (row: Record<string, any>, values: string[], aliases: string[], 
   return '';
 };
 
-const parseDateRobust = (dateStr: any): string => {
-  if (!dateStr) return new Date().toISOString();
+const isValidDateParts = (year: number, month: number, day: number, hour: number, minute: number, second: number) => {
+  const date = new Date(year, month, day, hour, minute, second);
+  return date.getFullYear() === year
+    && date.getMonth() === month
+    && date.getDate() === day
+    && date.getHours() === hour
+    && date.getMinutes() === minute
+    && date.getSeconds() === second;
+};
+
+const parseDateRobust = (dateStr: unknown): string => {
+  if (!dateStr) return '';
   const s = String(dateStr).trim();
-  if (!s) return new Date().toISOString();
+  if (!s) return '';
   const dmyMatch = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (dmyMatch) {
     const day = parseInt(dmyMatch[1], 10);
@@ -278,8 +325,10 @@ const parseDateRobust = (dateStr: any): string => {
     const hour = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 0;
     const min = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 0;
     const sec = dmyMatch[6] ? parseInt(dmyMatch[6], 10) : 0;
-    const d = new Date(year, month, day, hour, min, sec);
-    if (!isNaN(d.getTime())) return d.toISOString();
+    if (isValidDateParts(year, month, day, hour, min, sec)) {
+      return new Date(year, month, day, hour, min, sec).toISOString();
+    }
+    return '';
   }
   const ymdMatch = s.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
   if (ymdMatch) {
@@ -289,16 +338,18 @@ const parseDateRobust = (dateStr: any): string => {
     const hour = ymdMatch[4] ? parseInt(ymdMatch[4], 10) : 0;
     const min = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 0;
     const sec = ymdMatch[6] ? parseInt(ymdMatch[6], 10) : 0;
-    const d = new Date(year, month, day, hour, min, sec);
-    if (!isNaN(d.getTime())) return d.toISOString();
+    if (isValidDateParts(year, month, day, hour, min, sec)) {
+      return new Date(year, month, day, hour, min, sec).toISOString();
+    }
+    return '';
   }
   const fallback = new Date(s);
-  return isNaN(fallback.getTime()) ? new Date().toISOString() : fallback.toISOString();
+  return isNaN(fallback.getTime()) ? '' : fallback.toISOString();
 };
 
-const extractDateTime = (raw: any): { dateIso: string, horaStr: string } => {
+const extractDateTime = (raw: unknown): { dateIso: string, horaStr: string } => {
   if (!raw) {
-    return { dateIso: new Date().toISOString(), horaStr: '' };
+    return { dateIso: '', horaStr: '' };
   }
 
   const s = String(raw).trim();
@@ -321,16 +372,53 @@ const extractDateTime = (raw: any): { dateIso: string, horaStr: string } => {
   return { dateIso, horaStr };
 };
 
+const getRefuelingFingerprint = (item: Refueling): string => [
+  item.registro || '',
+  item.data,
+  item.hora || '',
+  item.bico,
+  item.id_frentista,
+  item.enc_inicial ?? '',
+  item.enc_final ?? '',
+  item.litros,
+  item.valor
+].join('|').toLowerCase();
+
+const createStableId = (fingerprint: string): string => {
+  let hash = 2166136261;
+  for (let index = 0; index < fingerprint.length; index += 1) {
+    hash ^= fingerprint.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `abast-${(hash >>> 0).toString(36)}`;
+};
+
+const isMeaningfulRefueling = (item: Refueling): boolean => Boolean(
+  item.data
+  && item.bico
+  && item.bico !== 'B?'
+  && (item.litros > 0 || item.valor > 0 || (item.enc_final ?? 0) > 0)
+);
+
 // --- Components ---
 
 const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose: () => void, title: string, children?: React.ReactNode }) => {
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4" role="presentation">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-          <h3 className="text-lg font-bold text-gray-800">{title}</h3>
-          <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors">
+          <h3 id="modal-title" className="text-lg font-bold text-gray-800">{title}</h3>
+          <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded-full transition-colors" aria-label="Fechar janela">
             <X size={20} className="text-gray-500" />
           </button>
         </div>
@@ -357,6 +445,10 @@ const App = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastImportStatsRef = useRef<ImportStats>({ sourceRows: 0, acceptedRows: 0 });
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   
   const [filterStartDate, setFilterStartDate] = useState(''); 
   const [filterEndDate, setFilterEndDate] = useState('');     
@@ -418,7 +510,10 @@ const App = () => {
           setData(normalized);
         }
       }
-    } catch (e) { console.error("Error loading abastecimentos_data", e); }
+    } catch (e) {
+      console.error("Error loading abastecimentos_data", e);
+      setNotice({ type: 'warning', message: 'Os dados salvos anteriormente não puderam ser carregados.' });
+    }
 
     try {
       const savedEmployees = localStorage.getItem('posto_employees');
@@ -437,6 +532,8 @@ const App = () => {
       }
     } catch (e) { console.error("Error loading abastecimentos_user", e); }
 
+    setIsHydrated(true);
+
     const handleClickOutside = (event: MouseEvent) => {
       if (frentistaDropdownRef.current && !frentistaDropdownRef.current.contains(event.target as Node)) {
         setIsFrentistaFilterOpen(false);
@@ -447,16 +544,36 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('abastecimentos_data', JSON.stringify(data));
-  }, [data]);
+    if (!isHydrated) return;
+    try {
+      localStorage.setItem('abastecimentos_data', JSON.stringify(data));
+    } catch (error) {
+      console.error('Error saving abastecimentos_data', error);
+      setNotice({ type: 'error', message: 'O navegador ficou sem espaço para salvar os abastecimentos. Exporte ou limpe dados antigos.' });
+    }
+  }, [data, isHydrated]);
 
   useEffect(() => {
-    localStorage.setItem('posto_employees', JSON.stringify(employees));
-  }, [employees]);
+    if (!isHydrated) return;
+    try {
+      localStorage.setItem('posto_employees', JSON.stringify(employees));
+    } catch (error) {
+      console.error('Error saving posto_employees', error);
+      setNotice({ type: 'error', message: 'Não foi possível salvar a lista de funcionários neste navegador.' });
+    }
+  }, [employees, isHydrated]);
 
   useEffect(() => {
-    localStorage.setItem('abastecimentos_user', JSON.stringify(currentUser));
-  }, [currentUser]);
+    if (!isHydrated) return;
+    if (currentUser) localStorage.setItem('abastecimentos_user', JSON.stringify(currentUser));
+    else localStorage.removeItem('abastecimentos_user');
+  }, [currentUser, isHydrated]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeoutId = window.setTimeout(() => setNotice(null), 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [notice]);
 
   const login = (user: AppUser) => setCurrentUser(user);
   const logout = () => {
@@ -503,26 +620,27 @@ const App = () => {
     if (!currentUser) return [];
     // Remove BOM if exists
     const cleanText = text.replace(/^\uFEFF/, '');
-    const lines = cleanText.split(/\r?\n/).filter(l => l.trim() !== '');
-    if (lines.length < 2) return [];
+    const firstLine = cleanText.split(/\r?\n/, 1)[0] || '';
+    if (!firstLine.trim()) return [];
     
-    const firstLine = lines[0];
-    const countSemi = (firstLine.match(/;/g) || []).length;
-    const countComma = (firstLine.match(/,/g) || []).length;
-    const countTab = (firstLine.match(/\t/g) || []).length;
+    const countSemi = countDelimiterOutsideQuotes(firstLine, ';');
+    const countComma = countDelimiterOutsideQuotes(firstLine, ',');
+    const countTab = countDelimiterOutsideQuotes(firstLine, '\t');
     let delimiter = ';';
     if (countTab > countSemi && countTab > countComma) delimiter = '\t';
     else if (countComma > countSemi) delimiter = ',';
     else delimiter = ';';
 
-    const headers = splitCSVLine(lines[0], delimiter).map(h => normalizeHeader(h));
-    const result: any[] = [];
+    const rows = parseDelimitedText(cleanText, delimiter);
+    if (rows.length < 2) return [];
 
-    for (let i = 1; i < lines.length; i++) {
+    const headers = rows[0].map(h => normalizeHeader(h));
+    const result: any[] = [];
+    let acceptedRows = 0;
+
+    for (let i = 1; i < rows.length; i++) {
       try {
-        const line = lines[i].trim();
-        if (!line) continue;
-        const values = splitCSVLine(line, delimiter);
+        const values = rows[i];
         const row: Record<string, any> = {};
         headers.forEach((header, index) => { 
           if (header) row[header] = values[index]; 
@@ -564,7 +682,7 @@ const App = () => {
           const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
 
           const newItem: Refueling = {
-            id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
+            id: '',
             id_frentista: String(frentistaId).trim(),
             data: parseDateRobust(dateRaw),
             hora: String(horaRaw || '').trim(),
@@ -584,8 +702,10 @@ const App = () => {
             rawTotalOriginal: rawTotal,
             rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+          if (isMeaningfulRefueling(newItem)) {
+            newItem.id = createStableId(getRefuelingFingerprint(newItem));
             result.push(newItem);
+            acceptedRows += 1;
           }
         } else if (type === 'comcept') {
           // Formato Log Concept:
@@ -617,7 +737,7 @@ const App = () => {
           const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
 
           const newItem: Refueling = {
-            id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
+            id: '',
             id_frentista: String(frentistaId).trim(),
             data: parseDateRobust(dateRaw),
             hora: String(horaRaw || '').trim(),
@@ -637,8 +757,10 @@ const App = () => {
             rawTotalOriginal: rawTotal,
             rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+          if (isMeaningfulRefueling(newItem)) {
+            newItem.id = createStableId(getRefuelingFingerprint(newItem));
             result.push(newItem);
+            acceptedRows += 1;
           }
         } else if (type === 'hiro') {
           // Formato Log Hiro:
@@ -671,7 +793,7 @@ const App = () => {
           const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
 
           const newItem: Refueling = {
-            id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
+            id: '',
             id_frentista: String(frentistaId).trim(),
             data: dateIso,
             hora: String(horaRaw || '').trim(),
@@ -691,8 +813,10 @@ const App = () => {
             rawTotalOriginal: rawTotal,
             rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+          if (isMeaningfulRefueling(newItem)) {
+            newItem.id = createStableId(getRefuelingFingerprint(newItem));
             result.push(newItem);
+            acceptedRows += 1;
           }
         } else {
           const nome = values[0] || row['nome'] || row['funcionario'] || '';
@@ -716,16 +840,30 @@ const App = () => {
             cards.forEach(card => {
               result.push({ id_cartao: card, nome: String(nome).trim() });
             });
+            acceptedRows += 1;
           }
         }
       } catch (err) { console.warn(`Erro ao processar linha ${i + 1}:`, err); }
     }
+    lastImportStatsRef.current = { sourceRows: rows.length - 1, acceptedRows };
     return result;
   };
 
   const handleImport = () => {
     if (selectedFile) {
-      const isExcel = selectedFile.name.endsWith('.xlsx') || selectedFile.name.endsWith('.xls');
+      const normalizedFileName = selectedFile.name.toLowerCase();
+      const isExcel = normalizedFileName.endsWith('.xlsx') || normalizedFileName.endsWith('.xls');
+      const hasSupportedExtension = isExcel || normalizedFileName.endsWith('.csv');
+      if (!hasSupportedExtension) {
+        setNotice({ type: 'error', message: 'Formato não suportado. Selecione um arquivo CSV, XLSX ou XLS.' });
+        return;
+      }
+      if (selectedFile.size > 25 * 1024 * 1024) {
+        setNotice({ type: 'error', message: 'O arquivo ultrapassa o limite de 25 MB. Divida-o em arquivos menores.' });
+        return;
+      }
+
+      setIsImporting(true);
       const reader = new FileReader();
       reader.onload = (e) => {
         try {
@@ -734,6 +872,7 @@ const App = () => {
             const data = new Uint8Array(e.target?.result as ArrayBuffer);
             const workbook = XLSX.read(data, { type: 'array', cellDates: true });
             const firstSheetName = workbook.SheetNames[0];
+            if (!firstSheetName) throw new Error('A planilha não possui abas.');
             const worksheet = workbook.Sheets[firstSheetName];
             csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ';', dateNF: 'dd/mm/yyyy hh:mm:ss' });
           } else {
@@ -743,7 +882,21 @@ const App = () => {
           const newItems = parseCSV(csvText, importType);
           if (newItems.length > 0) {
             if (importType === 'refueling' || importType === 'comcept' || importType === 'hiro') {
-              setData(prev => [...prev, ...newItems]);
+              const existingFingerprints = new Set(data.map(getRefuelingFingerprint));
+              const importedFingerprints = new Set<string>();
+              const uniqueItems = (newItems as Refueling[]).filter(item => {
+                const fingerprint = getRefuelingFingerprint(item);
+                if (existingFingerprints.has(fingerprint) || importedFingerprints.has(fingerprint)) return false;
+                importedFingerprints.add(fingerprint);
+                return true;
+              });
+              setData(prev => [...prev, ...uniqueItems]);
+              const duplicateCount = newItems.length - uniqueItems.length;
+              const skippedCount = lastImportStatsRef.current.sourceRows - lastImportStatsRef.current.acceptedRows;
+              setNotice({
+                type: uniqueItems.length > 0 ? 'success' : 'warning',
+                message: `${uniqueItems.length} abastecimento(s) importado(s)${duplicateCount > 0 ? `, ${duplicateCount} duplicado(s) ignorado(s)` : ''}${skippedCount > 0 ? ` e ${skippedCount} linha(s) inválida(s) ignorada(s)` : ''}.`
+              });
             } else {
               setEmployees(prev => {
                 const merged = [...prev];
@@ -754,15 +907,29 @@ const App = () => {
                 });
                 return merged;
               });
+              const skippedCount = lastImportStatsRef.current.sourceRows - lastImportStatsRef.current.acceptedRows;
+              setNotice({
+                type: 'success',
+                message: `Lista de funcionários atualizada${skippedCount > 0 ? `; ${skippedCount} linha(s) inválida(s) foram ignoradas` : ''}.`
+              });
             }
             setIsImportModalOpen(false);
             setSelectedFile(null);
             setCurrentPage(1);
-          } else alert("Não foi possível encontrar dados válidos no arquivo.");
+          } else {
+            setNotice({ type: 'error', message: 'Nenhum registro válido foi encontrado. Confira o formato e as colunas do arquivo.' });
+          }
         } catch (err) {
           console.error("Erro ao importar arquivo:", err);
-          alert("Erro ao ler o arquivo. Certifique-se de que é um arquivo CSV ou Excel válido.");
+          setNotice({ type: 'error', message: 'Não foi possível ler o arquivo. Verifique se ele é um CSV ou Excel válido.' });
+        } finally {
+          setIsImporting(false);
         }
+      };
+
+      reader.onerror = () => {
+        setIsImporting(false);
+        setNotice({ type: 'error', message: 'O navegador não conseguiu abrir o arquivo selecionado.' });
       };
 
       if (isExcel) {
@@ -1224,7 +1391,7 @@ const App = () => {
               <Fuel size={32} />
             </div>
             <h1 className="text-2xl font-black text-gray-800 tracking-tight">Leitor de log Horustech</h1>
-            <p className="text-gray-500 mt-2">Área Administrativa</p>
+            <p className="text-gray-500 mt-2">Importação e auditoria de abastecimentos</p>
           </div>
           <div className="space-y-4">
             {MOCK_USERS.map(user => (
@@ -1234,7 +1401,7 @@ const App = () => {
                 </div>
                 <div>
                   <div className="font-bold text-gray-800 group-hover:text-white">{user.name}</div>
-                  <div className="text-xs text-gray-400 group-hover:text-indigo-200 uppercase tracking-wider font-semibold">Acesso Completo</div>
+                  <div className="text-xs text-gray-400 group-hover:text-indigo-200 uppercase tracking-wider font-semibold">Abrir painel local</div>
                 </div>
               </button>
             ))}
@@ -1246,6 +1413,25 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-gray-50 pb-12 font-sans text-gray-900">
+      {notice && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed right-4 top-20 z-[60] flex max-w-md items-start gap-3 rounded-2xl border p-4 shadow-xl ${
+            notice.type === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : notice.type === 'warning'
+                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                : 'border-red-200 bg-red-50 text-red-900'
+          }`}
+        >
+          {notice.type === 'success' ? <CheckCircle2 size={20} /> : <AlertCircle size={20} />}
+          <p className="flex-1 text-sm font-semibold leading-relaxed">{notice.message}</p>
+          <button onClick={() => setNotice(null)} className="rounded-lg p-1 opacity-60 hover:bg-black/5 hover:opacity-100" aria-label="Fechar aviso">
+            <X size={16} />
+          </button>
+        </div>
+      )}
       <nav className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
@@ -2404,7 +2590,9 @@ const App = () => {
               </div>
             )}
           </div>
-          <button disabled={!selectedFile} onClick={handleImport} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-100 disabled:opacity-50 hover:bg-indigo-700 transition-all">Confirmar Importação</button>
+          <button disabled={!selectedFile || isImporting} onClick={handleImport} className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-100 disabled:opacity-50 hover:bg-indigo-700 transition-all">
+            {isImporting ? 'Processando arquivo…' : 'Confirmar Importação'}
+          </button>
         </div>
       </Modal>
 
