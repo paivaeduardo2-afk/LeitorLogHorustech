@@ -802,7 +802,7 @@ const App = () => {
 
   if (!isHydrated) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-6" role="status" aria-live="polite">
+      <div className="loading-shell min-h-screen flex items-center justify-center p-6" role="status" aria-live="polite">
         <div className="flex flex-col items-center gap-4 text-indigo-700">
           <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" aria-hidden="true" />
           <p className="text-sm font-bold">Carregando dados do painel…</p>
@@ -813,18 +813,19 @@ const App = () => {
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-6">
-        <div className="bg-white rounded-3xl shadow-xl p-8 w-full max-w-md border border-white">
+      <div className="login-shell min-h-screen flex items-center justify-center p-6">
+        <div className="login-card bg-white rounded-3xl shadow-xl p-8 w-full max-w-md border border-white">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center p-4 bg-indigo-600 rounded-2xl text-white mb-4 shadow-lg">
+            <div className="login-brand-mark inline-flex items-center justify-center p-4 bg-indigo-600 rounded-2xl text-white mb-4 shadow-lg">
               <Fuel size={32} />
             </div>
+            <p className="login-eyebrow mb-2">Controle operacional</p>
             <h1 className="text-2xl font-black text-gray-800 tracking-tight">Leitor de log Horustech</h1>
             <p className="text-gray-500 mt-2">Importação e auditoria de abastecimentos</p>
           </div>
           <div className="space-y-4">
             {MOCK_USERS.map(user => (
-              <button key={user.id} onClick={() => login(user)} className="w-full group flex items-center p-4 bg-gray-50 hover:bg-indigo-600 hover:text-white rounded-2xl transition-all duration-300 border border-gray-100 hover:border-indigo-400 text-left">
+              <button key={user.id} onClick={() => login(user)} className="login-entry w-full group flex items-center p-4 bg-gray-50 hover:bg-indigo-600 hover:text-white rounded-2xl transition-all duration-300 border border-gray-100 hover:border-indigo-400 text-left">
                 <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-indigo-600 group-hover:text-indigo-400 mr-4 shadow-sm">
                   <User size={24} />
                 </div>
@@ -841,7 +842,7 @@ const App = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-12 font-sans text-gray-900">
+    <div className="app-shell min-h-screen pb-12 font-sans text-gray-900">
       {notice && (
         <div
           role="status"
@@ -861,20 +862,23 @@ const App = () => {
           </button>
         </div>
       )}
-      <nav className="sticky top-0 z-40 bg-white border-b border-gray-200 shadow-sm">
+      <nav className="app-topbar sticky top-0 z-40 border-b shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16 items-center">
-            <div className="flex items-center gap-2">
-              <Fuel className="text-indigo-600" size={28} />
-              <span className="font-black text-xl tracking-tight hidden sm:block">LEITOR DE LOG HORUSTECH</span>
+            <div className="flex items-center gap-3">
+              <span className="brand-mark"><Fuel className="text-white" size={22} /></span>
+              <span className="brand-copy font-black text-lg tracking-tight">
+                LEITOR DE LOG HORUSTECH
+                <small>Operações & auditoria</small>
+              </span>
             </div>
             <div className="flex items-center gap-4">
               <div className="hidden sm:flex flex-col items-end">
                 <span className="text-sm font-bold">{currentUser.name}</span>
-                <span className="text-xs text-gray-500 uppercase">{currentUser.role}</span>
+                <span className="user-role text-xs text-gray-500 uppercase">{currentUser.role}</span>
               </div>
-              <div className="h-8 w-[1px] bg-gray-200 mx-2 hidden sm:block"></div>
-              <button onClick={logout} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center gap-2" title="Sair">
+              <div className="user-divider h-8 w-[1px] bg-gray-200 mx-2 hidden sm:block"></div>
+              <button onClick={logout} className="logout-button p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors flex items-center gap-2" title="Sair">
                 <LogOut size={20} />
                 <span className="text-sm font-bold sm:hidden">Sair</span>
               </button>
@@ -883,47 +887,48 @@ const App = () => {
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
+      <main className="app-content max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <div className="dashboard-hero flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
           <div>
-            <h1 className="text-3xl font-black text-gray-900 tracking-tight">Dashboard de Vendas</h1>
-            <p className="text-gray-500">Filtrado por Frentista • Fuso: Brasil (Brasília)</p>
+            <p className="hero-eyebrow mb-2">Visão operacional</p>
+            <h1 className="hero-title text-3xl font-black text-gray-900 tracking-tight">Painel de Abastecimentos</h1>
+            <p className="hero-subtitle text-gray-500">Análise por frentista • Fuso: Brasil (Brasília)</p>
           </div>
-          <div className="flex flex-wrap gap-3">
-            <button onClick={() => { setImportType('refueling'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
+          <div className="hero-actions flex flex-wrap gap-3">
+            <button onClick={() => { setImportType('refueling'); setIsImportModalOpen(true); }} className="primary-action flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Horustech
             </button>
-            <button onClick={() => { setImportType('comcept'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
+            <button onClick={() => { setImportType('comcept'); setIsImportModalOpen(true); }} className="primary-action flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Concept
             </button>
-            <button onClick={() => { setImportType('hiro'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
+            <button onClick={() => { setImportType('hiro'); setIsImportModalOpen(true); }} className="primary-action flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Hiro
             </button>
-            <button onClick={() => { setImportType('employees'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-5 py-2.5 rounded-xl font-bold transition-all shadow-sm">
+            <button onClick={() => { setImportType('employees'); setIsImportModalOpen(true); }} className="secondary-action flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-5 py-2.5 rounded-xl font-bold transition-all shadow-sm">
               <UserPlus size={18} /> Importar Funcionários
             </button>
-            <button onClick={() => setIsDeleteModalOpen(true)} className="flex items-center gap-2 bg-white border border-red-200 text-red-600 hover:bg-red-50 px-5 py-2.5 rounded-xl font-bold transition-all">
+            <button onClick={() => setIsDeleteModalOpen(true)} className="danger-action flex items-center gap-2 bg-white border border-red-200 text-red-600 hover:bg-red-50 px-5 py-2.5 rounded-xl font-bold transition-all">
               <Trash2 size={18} /> Limpar Tudo
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+        <div className="metrics-grid grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+          <div className="metric-card metric-volume bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
             <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><Droplet size={24} /></div>
             <div>
               <p className="text-sm text-gray-500 font-medium">Volume Total</p>
               <p className="text-2xl font-black">{formatNumber(globalStats.totalLiters)} L</p>
             </div>
           </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+          <div className="metric-card metric-revenue bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
             <div className="p-3 bg-green-50 text-green-600 rounded-xl"><DollarSign size={24} /></div>
             <div>
               <p className="text-sm text-gray-500 font-medium">Preço Total</p>
               <p className="text-2xl font-black">{formatCurrency(globalStats.totalValue)}</p>
             </div>
           </div>
-          <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+          <div className="metric-card metric-count bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
             <div className="p-3 bg-purple-50 text-purple-600 rounded-xl"><Fuel size={24} /></div>
             <div>
               <p className="text-sm text-gray-500 font-medium">Abastecimentos</p>
@@ -933,12 +938,12 @@ const App = () => {
         </div>
 
         {/* Seletor de Abas */}
-        <div className="flex flex-wrap bg-white p-1.5 rounded-2xl shadow-sm border border-gray-100 mb-8 max-w-5xl gap-1">
+        <div className="section-tabs flex flex-wrap bg-white p-1.5 rounded-2xl shadow-sm border border-gray-100 mb-8 max-w-5xl gap-1">
           <button 
             onClick={() => setActiveTab('frentistas')} 
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[150px] ${
               activeTab === 'frentistas' 
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' 
+                ? 'tab-active bg-indigo-600 text-white shadow-md shadow-indigo-100'
                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100/50'
             }`}
           >
@@ -949,7 +954,7 @@ const App = () => {
             onClick={() => setActiveTab('bicos')} 
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[150px] ${
               activeTab === 'bicos' 
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' 
+                ? 'tab-active bg-indigo-600 text-white shadow-md shadow-indigo-100'
                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100/50'
             }`}
           >
@@ -960,7 +965,7 @@ const App = () => {
             onClick={() => setActiveTab('encerrantes')} 
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[250px] ${
               activeTab === 'encerrantes' 
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' 
+                ? 'tab-active bg-indigo-600 text-white shadow-md shadow-indigo-100'
                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100/50'
             }`}
           >
@@ -971,7 +976,7 @@ const App = () => {
             onClick={() => setActiveTab('vendas_preco')} 
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[150px] ${
               activeTab === 'vendas_preco' 
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-100' 
+                ? 'tab-active bg-indigo-600 text-white shadow-md shadow-indigo-100'
                 : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100/50'
             }`}
           >
@@ -985,7 +990,7 @@ const App = () => {
             }} 
             className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[220px] ${
               activeTab === 'inconsistencias' 
-                ? 'bg-amber-600 text-white shadow-md shadow-amber-200' 
+                ? 'tab-active audit-tab-active bg-amber-600 text-white shadow-md shadow-amber-200'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-amber-50/50'
             }`}
           >
@@ -1003,7 +1008,7 @@ const App = () => {
           </button>
         </div>
 
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
+        <div className="content-panel bg-white p-6 rounded-2xl shadow-sm border border-gray-100 mb-8">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2 text-gray-800 font-bold uppercase text-xs tracking-widest">
               <Filter size={14} className="text-indigo-600" /> Filtros Avançados
