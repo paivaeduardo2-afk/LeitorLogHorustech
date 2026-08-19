@@ -29,7 +29,11 @@ import {
   Square,
   CreditCard,
   UserPlus,
-  Layers
+  Layers,
+  ShieldAlert,
+  AlertCircle,
+  Info,
+  CheckCircle2
 } from 'lucide-react';
 
 // --- Types ---
@@ -55,6 +59,34 @@ interface Refueling {
   enc_inicial?: number;
   enc_final?: number;
   ownerId: string;
+  // Campos para auditoria e rastreabilidade da planilha:
+  linhaPlanilha?: number; // Linha real da planilha (ex: linha 2, linha 7079)
+  registro?: string; // Número de registro do log/planilha (ex: 2197, 2750)
+  origemVolumeVazio?: boolean; // Se o volume original veio vazio/0
+  origemTotalVazio?: boolean; // Se o valor total original veio vazio/0
+  origemPrecoVazio?: boolean; // Se o preço original veio vazio/0
+  rawVolumeOriginal?: number; // Volume original antes do cálculo
+  rawTotalOriginal?: number; // Total original antes do cálculo
+  rawPrecoOriginal?: number; // Preço original antes do cálculo
+}
+
+export interface RefuelingIssue {
+  type: 'enc_igual' | 'enc_menor' | 'vol_vazio' | 'tot_vazio' | 'prc_vazio' | 'vol_zero' | 'tot_zero';
+  label: string;
+  description: string;
+  badgeClass: string;
+  severity: 'critical' | 'warning' | 'info';
+}
+
+export interface InconsistentRecord {
+  item: Refueling;
+  issues: RefuelingIssue[];
+  hasEncerranteIgual: boolean;
+  hasEncerranteMenor: boolean;
+  hasVolumeVazio: boolean;
+  hasTotalVazio: boolean;
+  hasPrecoVazio: boolean;
+  encDelta: number;
 }
 
 interface Employee {
@@ -115,6 +147,122 @@ const getDateOnlyString = (isoString: string): string => {
   } catch {
     return "";
   }
+};
+
+const parseNumericValue = (val: any): number => {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  
+  let str = String(val).trim();
+  if (!str || str === '-' || str === '--' || str === 'N/A' || str === 'null' || str === 'undefined') return 0;
+  
+  // Remover símbolo de moeda "R$" ou "$" e espaços
+  str = str.replace(/R\$/gi, '').replace(/\$/g, '').trim();
+  if (!str || str === '-' || str === '.') return 0;
+  
+  // Tratar pontuação brasileira (1.234.567,89) vs internacional (1,234,567.89)
+  if (str.includes('.') && str.includes(',')) {
+    if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      str = str.replace(/,/g, '');
+    }
+  } else if (str.includes(',')) {
+    str = str.replace(',', '.');
+  }
+  
+  str = str.replace(/[^0-9.-]/g, '');
+  if (!str || str === '-' || str === '.') return 0;
+  
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+};
+
+// Calcula e preenche automaticamente Volume (Enc. Final - Enc. Inicial) e Total (Volume * Preço)
+const calculateVolumeAndTotal = (
+  rawVolume: number,
+  rawTotal: number,
+  rawPreco: number,
+  encInicial: number,
+  encFinal: number
+): { volume: number; valorTotal: number; precoUnitario: number } => {
+  let volume = rawVolume > 0 ? rawVolume : 0;
+  let valorTotal = rawTotal > 0 ? rawTotal : 0;
+  let precoUnitario = rawPreco > 0 ? rawPreco : 0;
+
+  // 1. Se o volume estiver vazio ou zerado, calcula: Encerrante Final - Encerrante Inicial
+  if (volume <= 0 && encFinal > 0 && encInicial > 0 && encFinal >= encInicial) {
+    volume = Math.round((encFinal - encInicial) * 10000) / 10000;
+  }
+
+  // Se volume ainda estiver zerado, mas tiver total e preço
+  if (volume <= 0 && valorTotal > 0 && precoUnitario > 0) {
+    volume = Math.round((valorTotal / precoUnitario) * 10000) / 10000;
+  }
+
+  // 2. Se o total estiver vazio ou zerado, calcula: Volume * Preço Unitário
+  if (valorTotal <= 0 && volume > 0 && precoUnitario > 0) {
+    valorTotal = Math.round((volume * precoUnitario) * 100) / 100;
+  }
+
+  // 3. Se o preço unitário estiver vazio ou zerado, calcula: Valor Total / Volume
+  if (precoUnitario <= 0 && volume > 0 && valorTotal > 0) {
+    precoUnitario = Math.round((valorTotal / volume) * 10000) / 10000;
+  }
+
+  // 4. Se o total ainda estiver zerado após calcular volume e preço
+  if (valorTotal <= 0 && volume > 0 && precoUnitario > 0) {
+    valorTotal = Math.round((volume * precoUnitario) * 100) / 100;
+  }
+
+  return {
+    volume: isNaN(volume) ? 0 : volume,
+    valorTotal: isNaN(valorTotal) ? 0 : valorTotal,
+    precoUnitario: isNaN(precoUnitario) ? 0 : precoUnitario,
+  };
+};
+
+const normalizeHeader = (header: string): string => {
+  return String(header || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9_]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const splitCSVLine = (line: string, delimiter: string): string[] => {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === delimiter && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result.map(v => v.replace(/^["']|["']$/g, '').trim());
+};
+
+const findCol = (row: Record<string, any>, values: string[], aliases: string[], fallbackIndex?: number): any => {
+  for (const alias of aliases) {
+    const norm = normalizeHeader(alias);
+    if (row[norm] !== undefined && row[norm] !== '') {
+      return row[norm];
+    }
+  }
+  if (fallbackIndex !== undefined && fallbackIndex < values.length && values[fallbackIndex] !== undefined) {
+    return values[fallbackIndex];
+  }
+  return '';
 };
 
 const parseDateRobust = (dateStr: any): string => {
@@ -222,14 +370,53 @@ const App = () => {
 
   const [sortBy, setSortBy] = useState<'data' | 'bico' | 'valor'>('data');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [activeTab, setActiveTab] = useState<'frentistas' | 'bicos' | 'encerrantes' | 'vendas_preco'>('frentistas');
+  const [activeTab, setActiveTab] = useState<'frentistas' | 'bicos' | 'encerrantes' | 'vendas_preco' | 'inconsistencias'>('frentistas');
+
+  // Estados para a Aba de Inconsistências / Auditoria da Planilha
+  const [inconsistencyFilter, setInconsistencyFilter] = useState<'all' | 'enc_igual' | 'vol_vazio' | 'tot_vazio' | 'prc_vazio' | 'enc_menor'>('all');
+  const [inconsistencySearch, setInconsistencySearch] = useState('');
+  const [expandedInconsistencyId, setExpandedInconsistencyId] = useState<string | null>(null);
+  const [inconsistencyPage, setInconsistencyPage] = useState(1);
+  const inconsistenciesPerPage = 15;
 
   useEffect(() => {
     try {
       const savedData = localStorage.getItem('abastecimentos_data');
       if (savedData) {
         const parsed = JSON.parse(savedData);
-        if (Array.isArray(parsed)) setData(parsed);
+        if (Array.isArray(parsed)) {
+          // Re-processa dados existentes caso tenham linhas com volume ou total zerados/vazios
+          const normalized = parsed.map((item, idx) => {
+            const encIni = parseNumericValue(item.enc_inicial);
+            const encFin = parseNumericValue(item.enc_final);
+            const rawVol = item.rawVolumeOriginal !== undefined ? parseNumericValue(item.rawVolumeOriginal) : parseNumericValue(item.litros);
+            const rawTot = item.rawTotalOriginal !== undefined ? parseNumericValue(item.rawTotalOriginal) : parseNumericValue(item.valor);
+            const rawPrc = item.rawPrecoOriginal !== undefined ? parseNumericValue(item.rawPrecoOriginal) : parseNumericValue(item.preco_unitario);
+            const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVol, rawTot, rawPrc, encIni, encFin);
+            
+            const origemVolVazio = item.origemVolumeVazio !== undefined ? item.origemVolumeVazio : (rawVol <= 0);
+            const origemTotVazio = item.origemTotalVazio !== undefined ? item.origemTotalVazio : (rawTot <= 0);
+            const origemPrcVazio = item.origemPrecoVazio !== undefined ? item.origemPrecoVazio : (rawPrc <= 0);
+
+            return {
+              ...item,
+              linhaPlanilha: item.linhaPlanilha || (idx + 2),
+              registro: item.registro || '',
+              litros: volume,
+              valor: valorTotal,
+              preco_unitario: precoUnitario,
+              enc_inicial: encIni,
+              enc_final: encFin,
+              origemVolumeVazio: origemVolVazio,
+              origemTotalVazio: origemTotVazio,
+              origemPrecoVazio: origemPrcVazio,
+              rawVolumeOriginal: rawVol,
+              rawTotalOriginal: rawTot,
+              rawPrecoOriginal: rawPrc
+            };
+          });
+          setData(normalized);
+        }
       }
     } catch (e) { console.error("Error loading abastecimentos_data", e); }
 
@@ -320,72 +507,88 @@ const App = () => {
     if (lines.length < 2) return [];
     
     const firstLine = lines[0];
-    const delimiter = firstLine.includes(';') ? ';' : ',';
-    const headers = lines[0].toLowerCase().split(delimiter).map(h => h.trim().replace(/['"]/g, ''));
+    const countSemi = (firstLine.match(/;/g) || []).length;
+    const countComma = (firstLine.match(/,/g) || []).length;
+    const countTab = (firstLine.match(/\t/g) || []).length;
+    let delimiter = ';';
+    if (countTab > countSemi && countTab > countComma) delimiter = '\t';
+    else if (countComma > countSemi) delimiter = ',';
+    else delimiter = ';';
+
+    const headers = splitCSVLine(lines[0], delimiter).map(h => normalizeHeader(h));
     const result: any[] = [];
 
     for (let i = 1; i < lines.length; i++) {
       try {
         const line = lines[i].trim();
         if (!line) continue;
-        const values = line.split(delimiter).map(v => v.trim().replace(/['"]/g, ''));
-        const row: any = {};
-        headers.forEach((header, index) => { row[header] = values[index]; });
+        const values = splitCSVLine(line, delimiter);
+        const row: Record<string, any> = {};
+        headers.forEach((header, index) => { 
+          if (header) row[header] = values[index]; 
+        });
 
         if (type === 'refueling') {
-          const frentistaId = values.length >= 13 ? values[12] : (row.id_frentista || row.frentista || 'N/A');
-          const dateRaw = row.data || row.data_hora || row.date || row.timestamp;
-          const bicoRaw = row.bico || row.id_bico || 'B?';
-          
-          // Extração baseada em índices (1-based para o usuário, 0-based para o código)
-          // Coluna 7 (index 6): Preço Unitário (Preço de Venda)
+          // Log Horustech:
+          // Coluna 1 (index 0): Registro
+          // Coluna 2 (index 1): Bico
+          // Coluna 3 (index 2): Prod.
+          // Coluna 4 (index 3): Tanq
+          // Coluna 5 (index 4): Total (Total de Vendas)
           // Coluna 6 (index 5): Volume (Litros)
-          // Coluna 5 (index 4): Valor Total (Total de Vendas)
+          // Coluna 7 (index 6): Preço Unitário (Preço de Venda / Pre)
+          // Coluna 8 (index 7): Tempo
+          // Coluna 9 (index 8): Data
+          // Coluna 10 (index 9): Hora
           // Coluna 11 (index 10): Encerrante Inicial
           // Coluna 12 (index 11): Encerrante Final
-          let precoUnitario = parseFloat(String(values[6] || row.preco_unitario || row.unit_price || row.preço || '0').replace(',', '.'));
-          let volume = parseFloat(String(values[5] || row.litros || row.volume || row.quantidade || row.liters || '0').replace(',', '.'));
-          let valorTotal = parseFloat(String(values[4] || row.valor || row.total || row.price || row.valor_total || '0').replace(',', '.'));
-          let encInicial = parseFloat(String(values[10] || row.enc_inicial || row.initial_reading || '0').replace(',', '.'));
-          let encFinal = parseFloat(String(values[11] || row.enc_final || row.final_reading || '0').replace(',', '.'));
-
-          // Lógica solicitada: Se volume (coluna 6) estiver zerado, calcular: Enc. Final - Enc. Inicial
-          if (volume === 0 && encFinal > 0 && encInicial > 0) {
-            volume = encFinal - encInicial;
-          }
-
-          // Lógica solicitada: Se valor total (coluna 7) estiver zerado, calcular: Volume * Preço Unitário
-          if (valorTotal === 0 && volume > 0 && precoUnitario > 0) {
-            valorTotal = volume * precoUnitario;
-          }
+          // Coluna 13 (index 12): ID Frentista
+          const registroVal = findCol(row, values, ['registro', 'reg', 'num_registro', 'id_registro'], 0);
+          const frentistaId = findCol(row, values, ['id frentista', 'id_frentista', 'frentista', 'id frent', 'cartao', 'card', 'id frentista 1', 'id_frent'], 12) || 'N/A';
+          const dateRaw = findCol(row, values, ['data', 'date', 'data_hora', 'data hora', 'dt abast', 'datahora', 'timestamp'], 8);
+          const horaRaw = findCol(row, values, ['hora', 'hour', 'time', 'hr abast'], 9);
+          const bicoRaw = findCol(row, values, ['bico', 'id_bico', 'id bico', 'nozzle', 'num bico', 'bico id'], 1) || 'B?';
           
-          // Caso o preço unitário esteja zerado mas tenhamos valor e volume, podemos inferir
-          if (precoUnitario === 0 && volume > 0 && valorTotal > 0) {
-            precoUnitario = valorTotal / volume;
-          }
+          let encInicial = parseNumericValue(findCol(row, values, ['enc inicial', 'enc_inicial', 'enc. inicial', 'enc.inicial', 'encinicial', 'totals_volume_init', 'encerrante inicial', 'encerrante_inicial', 'inicial', 'reading start'], 10));
+          let encFinal = parseNumericValue(findCol(row, values, ['enc final', 'enc_final', 'enc. final', 'enc.final', 'encfinal', 'totals_volume_final', 'encerrante final', 'encerrante_final', 'final', 'reading end'], 11));
+          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'quantidade', 'liters', 'vol', 'qtd', 'litragem'], 5));
+          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'valor total', 'valortotal', 'price', 'total venda', 'total abastecimento', 'vlr total'], 4));
+          let rawPreco = parseNumericValue(findCol(row, values, ['preco', 'preço', 'preco unitario', 'preço unitário', 'preco_unitario', 'pre', 'unit price', 'unit_price', 'preco de venda', 'preço de venda', 'valor unitario'], 6));
 
-          // Caso o volume ainda seja 0 mas tenhamos valor e preço, podemos inferir
-          if (volume === 0 && valorTotal > 0 && precoUnitario > 0) {
-            volume = valorTotal / precoUnitario;
-          }
+          const origemVolumeVazio = rawVolume <= 0;
+          const origemTotalVazio = rawTotal <= 0;
+          const origemPrecoVazio = rawPreco <= 0;
 
-          const horaRaw = values.length >= 10 ? values[9] : '';
+          // Executa a regra solicitada: quando total e volume estiverem vazios/zerados,
+          // volume = encFinal - encInicial, e total = volume * preco
+          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
+
           const newItem: Refueling = {
             id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
             id_frentista: String(frentistaId).trim(),
             data: parseDateRobust(dateRaw),
-            hora: horaRaw,
-            bico: String(bicoRaw),
+            hora: String(horaRaw || '').trim(),
+            bico: String(bicoRaw).trim(),
             valor: valorTotal,
             litros: volume,
             preco_unitario: precoUnitario,
             enc_inicial: encInicial,
             enc_final: encFinal,
-            ownerId: currentUser.id
+            ownerId: currentUser.id,
+            linhaPlanilha: i + 1,
+            registro: registroVal ? String(registroVal).trim() : '',
+            origemVolumeVazio,
+            origemTotalVazio,
+            origemPrecoVazio,
+            rawVolumeOriginal: rawVolume,
+            rawTotalOriginal: rawTotal,
+            rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros)) result.push(newItem);
+          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+            result.push(newItem);
+          }
         } else if (type === 'comcept') {
-          // Formato Log Comcept
+          // Formato Log Concept:
           // Coluna 2 (index 1): Valor Total (total)
           // Coluna 3 (index 2): Volume (volume)
           // Coluna 4 (index 3): Preço Unitário (price)
@@ -395,50 +598,48 @@ const App = () => {
           // Coluna 10 (index 9): Encerrante Final (totals_volume_final)
           // Coluna 13 (index 12): Card Frentista (card_attendant / attendant_name)
           // Coluna 15 (index 14): Bico (nozzle)
-          let valorTotal = parseFloat(String(values[1] || row.total || row.valor || '0').replace(',', '.'));
-          let volume = parseFloat(String(values[2] || row.volume || row.litros || '0').replace(',', '.'));
-          let precoUnitario = parseFloat(String(values[3] || row.price || row.preco_unitario || '0').replace(',', '.'));
-          let encInicial = parseFloat(String(values[8] || row.totals_volume_init || row.enc_inicial || '0').replace(',', '.'));
-          let encFinal = parseFloat(String(values[9] || row.totals_volume_final || row.enc_final || '0').replace(',', '.'));
+          const registroVal = findCol(row, values, ['id', 'registro', 'transacao', 'id_abast'], 0);
+          const frentistaId = findCol(row, values, ['attendant_name', 'attendant name', 'card_attendant', 'card attendant', 'id_frentista', 'frentista', 'cartao'], 12) || 'N/A';
+          const bicoRaw = findCol(row, values, ['nozzle', 'bico', 'id_bico', 'bico_id'], 14) || 'B?';
+          const dateRaw = findCol(row, values, ['date', 'data', 'data_hora'], 5);
+          const horaRaw = findCol(row, values, ['hour', 'hora', 'time'], 6);
 
-          const frentistaId = (row.attendant_name && String(row.attendant_name).trim() !== '') 
-            ? String(row.attendant_name).trim() 
-            : (values.length >= 13 ? values[12] : (row.card_attendant || row.id_frentista || 'N/A'));
-          
-          const bicoRaw = values.length >= 15 ? values[14] : (row.nozzle || row.bico || 'B?');
-          const dateRaw = row.date || row.data || (values.length >= 6 ? values[5] : '');
-          const horaRaw = row.hour || row.hora || (values.length >= 7 ? values[6] : '');
+          let encInicial = parseNumericValue(findCol(row, values, ['totals_volume_init', 'enc_inicial', 'enc inicial', 'enc. inicial', 'inicial'], 8));
+          let encFinal = parseNumericValue(findCol(row, values, ['totals_volume_final', 'enc_final', 'enc final', 'enc. final', 'final'], 9));
+          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'quantidade'], 2));
+          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'price'], 1));
+          let rawPreco = parseNumericValue(findCol(row, values, ['price', 'preco', 'preço', 'preco_unitario'], 3));
 
-          if (volume === 0 && encFinal > 0 && encInicial > 0) {
-            volume = encFinal - encInicial;
-          }
+          const origemVolumeVazio = rawVolume <= 0;
+          const origemTotalVazio = rawTotal <= 0;
+          const origemPrecoVazio = rawPreco <= 0;
 
-          if (valorTotal === 0 && volume > 0 && precoUnitario > 0) {
-            valorTotal = volume * precoUnitario;
-          }
-
-          if (precoUnitario === 0 && volume > 0 && valorTotal > 0) {
-            precoUnitario = valorTotal / volume;
-          }
-
-          if (volume === 0 && valorTotal > 0 && precoUnitario > 0) {
-            volume = valorTotal / precoUnitario;
-          }
+          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
 
           const newItem: Refueling = {
             id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
             id_frentista: String(frentistaId).trim(),
             data: parseDateRobust(dateRaw),
-            hora: horaRaw,
-            bico: String(bicoRaw),
+            hora: String(horaRaw || '').trim(),
+            bico: String(bicoRaw).trim(),
             valor: valorTotal,
             litros: volume,
             preco_unitario: precoUnitario,
             enc_inicial: encInicial,
             enc_final: encFinal,
-            ownerId: currentUser.id
+            ownerId: currentUser.id,
+            linhaPlanilha: i + 1,
+            registro: registroVal ? String(registroVal).trim() : '',
+            origemVolumeVazio,
+            origemTotalVazio,
+            origemPrecoVazio,
+            rawVolumeOriginal: rawVolume,
+            rawTotalOriginal: rawTotal,
+            rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros)) result.push(newItem);
+          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+            result.push(newItem);
+          }
         } else if (type === 'hiro') {
           // Formato Log Hiro:
           // 1ª coluna (index 0): Número do Bico
@@ -449,56 +650,52 @@ const App = () => {
           // 7ª coluna (index 6): Encerrante Inicial
           // 8ª coluna (index 7): Encerrante Final
           // 10ª coluna (index 9): Cartão do Funcionário
-          const bicoRaw = (values.length >= 1 && values[0] && String(values[0]).trim() !== '') 
-            ? values[0] 
-            : (row.nozzle || row.bico || row.nozzle_number || 'B?');
+          const registroVal = findCol(row, values, ['registro', 'id', 'transacao', 'cod'], 1);
+          const bicoRaw = findCol(row, values, ['nozzle', 'bico', 'nozzle_number', 'num_bico'], 0) || 'B?';
+          let dateRaw = findCol(row, values, ['date', 'data', 'data_hora', 'data hora', 'data/hora'], 2);
+          const frentistaId = findCol(row, values, ['card_attendant', 'id_frentista', 'cartao', 'card', 'funcionario'], 9) || 'N/A';
 
-          let dateRaw = values.length >= 3 ? values[2] : (row.date || row.data || row['data/hora'] || row['data_hora'] || '');
-          let precoUnitario = parseFloat(String(values[3] || row.price || row.preco || row.preco_unitario || '0').replace(',', '.'));
-          let volume = parseFloat(String(values[4] || row.volume || row.litros || row.litro || '0').replace(',', '.'));
-          let valorTotal = parseFloat(String(values[5] || row.total || row.valor || row.valor_total || '0').replace(',', '.'));
-          let encInicial = parseFloat(String(values[6] || row.totals_volume_init || row.enc_inicial || '0').replace(',', '.'));
-          let encFinal = parseFloat(String(values[7] || row.totals_volume_final || row.enc_final || '0').replace(',', '.'));
+          let encInicial = parseNumericValue(findCol(row, values, ['totals_volume_init', 'enc_inicial', 'enc inicial', 'enc. inicial', 'inicial'], 6));
+          let encFinal = parseNumericValue(findCol(row, values, ['totals_volume_final', 'enc_final', 'enc final', 'enc. final', 'final'], 7));
+          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'litro vendido'], 4));
+          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'total do abastecimento'], 5));
+          let rawPreco = parseNumericValue(findCol(row, values, ['price', 'preco', 'preço', 'preco_unitario', 'preco de venda'], 3));
 
-          const frentistaId = (values.length >= 10 && values[9] && String(values[9]).trim() !== '') 
-            ? String(values[9]).trim() 
-            : (row.card_attendant || row.id_frentista || row.cartao || row.card || 'N/A');
+          const origemVolumeVazio = rawVolume <= 0;
+          const origemTotalVazio = rawTotal <= 0;
+          const origemPrecoVazio = rawPreco <= 0;
 
           const { dateIso, horaStr } = extractDateTime(dateRaw);
-          let horaRaw = row.hour || row.hora || horaStr;
+          let horaRaw = findCol(row, values, ['hour', 'hora', 'time']) || horaStr;
 
-          if (volume === 0 && encFinal > 0 && encInicial > 0) {
-            volume = encFinal - encInicial;
-          }
-
-          if (valorTotal === 0 && volume > 0 && precoUnitario > 0) {
-            valorTotal = volume * precoUnitario;
-          }
-
-          if (precoUnitario === 0 && volume > 0 && valorTotal > 0) {
-            precoUnitario = valorTotal / volume;
-          }
-
-          if (volume === 0 && valorTotal > 0 && precoUnitario > 0) {
-            volume = valorTotal / precoUnitario;
-          }
+          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
 
           const newItem: Refueling = {
             id: Math.random().toString(36).substr(2, 9) + Date.now() + i,
             id_frentista: String(frentistaId).trim(),
             data: dateIso,
-            hora: horaRaw,
+            hora: String(horaRaw || '').trim(),
             bico: String(bicoRaw).trim(),
             valor: valorTotal,
             litros: volume,
             preco_unitario: precoUnitario,
             enc_inicial: encInicial,
             enc_final: encFinal,
-            ownerId: currentUser.id
+            ownerId: currentUser.id,
+            linhaPlanilha: i + 1,
+            registro: registroVal ? String(registroVal).trim() : '',
+            origemVolumeVazio,
+            origemTotalVazio,
+            origemPrecoVazio,
+            rawVolumeOriginal: rawVolume,
+            rawTotalOriginal: rawTotal,
+            rawPrecoOriginal: rawPreco
           };
-          if (!isNaN(newItem.valor) || !isNaN(newItem.litros)) result.push(newItem);
+          if (!isNaN(newItem.valor) || !isNaN(newItem.litros) || encFinal > 0) {
+            result.push(newItem);
+          }
         } else {
-          const nome = values[0] || row.nome;
+          const nome = values[0] || row['nome'] || row['funcionario'] || '';
           let cartao1 = "";
           let cartao2 = "";
           let cartao3 = "";
@@ -508,9 +705,9 @@ const App = () => {
             cartao2 = (values[2] || "").trim();
             cartao3 = (values[3] || "").trim();
           } else {
-            cartao1 = (values[2] || row.id_cartao_abast || "").trim();
-            cartao2 = (values[3] || row.id_cartao_abast_2 || "").trim();
-            cartao3 = (values[4] || row.id_cartao_abast_3 || "").trim();
+            cartao1 = (values[2] || row['id_cartao_abast'] || row['id cartao abast'] || "").trim();
+            cartao2 = (values[3] || row['id_cartao_abast_2'] || row['id cartao abast 2'] || "").trim();
+            cartao3 = (values[4] || row['id_cartao_abast_3'] || row['id cartao abast 3'] || "").trim();
           }
           
           const cards = [cartao1, cartao2, cartao3].filter(c => c.length > 0);
@@ -806,17 +1003,179 @@ const App = () => {
     const groups: Record<number, { preco: number; totalLiters: number; totalValue: number; count: number }> = {};
     
     filteredData.forEach(item => {
-      const preco = item.preco_unitario || 0;
+      const preco = parseNumericValue(item.preco_unitario);
       if (!groups[preco]) {
         groups[preco] = { preco, totalLiters: 0, totalValue: 0, count: 0 };
       }
-      groups[preco].totalLiters += item.litros;
-      groups[preco].totalValue += item.valor;
+      const litros = parseNumericValue(item.litros);
+      const valor = parseNumericValue(item.valor);
+      groups[preco].totalLiters += litros;
+      groups[preco].totalValue += valor;
       groups[preco].count += 1;
     });
 
     return Object.values(groups).sort((a, b) => b.preco - a.preco);
   }, [filteredData]);
+
+  // --- Registros com Inconsistências / Alertas da Planilha ---
+  const inconsistentRecords = useMemo(() => {
+    return data.map((item, idx) => {
+      const issues: RefuelingIssue[] = [];
+      const encIni = parseNumericValue(item.enc_inicial);
+      const encFin = parseNumericValue(item.enc_final);
+      const encDelta = encFin - encIni;
+      
+      // 1. Encerrante Inicial é exatamente igual ao Encerrante Final (Delta = 0)
+      const hasEncerranteIgual = encIni > 0 && encFin > 0 && Math.abs(encFin - encIni) < 0.0001;
+      if (hasEncerranteIgual) {
+        issues.push({
+          type: 'enc_igual',
+          label: 'Enc. Inicial = Enc. Final',
+          description: `Encerrante Inicial e Final possuem a mesma leitura (${formatNumber(encIni)} L). Delta de volume = 0,00 L.`,
+          badgeClass: 'bg-red-100 text-red-800 border-red-200',
+          severity: 'critical'
+        });
+      }
+
+      // 2. Encerrante Final menor que o Inicial
+      const hasEncerranteMenor = encIni > 0 && encFin > 0 && encFin < encIni;
+      if (hasEncerranteMenor) {
+        issues.push({
+          type: 'enc_menor',
+          label: 'Enc. Final < Inicial',
+          description: `Encerrante Final (${formatNumber(encFin)} L) é menor que o Inicial (${formatNumber(encIni)} L). Leitura regressiva.`,
+          badgeClass: 'bg-rose-100 text-rose-800 border-rose-200',
+          severity: 'critical'
+        });
+      }
+
+      // 3. Volume vazio ou zerado na planilha de origem
+      const hasVolumeVazio = item.origemVolumeVazio === true || (item.rawVolumeOriginal !== undefined && item.rawVolumeOriginal <= 0);
+      if (hasVolumeVazio) {
+        issues.push({
+          type: 'vol_vazio',
+          label: 'Volume Vazio na Planilha',
+          description: `Volume original veio zerado/vazio na planilha. Calculado pelo sistema via Encerrantes: +${formatNumber(item.litros)} L.`,
+          badgeClass: 'bg-amber-100 text-amber-800 border-amber-200',
+          severity: 'warning'
+        });
+      }
+
+      // 4. Total vazio ou zerado na planilha de origem
+      const hasTotalVazio = item.origemTotalVazio === true || (item.rawTotalOriginal !== undefined && item.rawTotalOriginal <= 0);
+      if (hasTotalVazio) {
+        issues.push({
+          type: 'tot_vazio',
+          label: 'Total Vazio na Planilha',
+          description: `Valor total original veio zerado/vazio na planilha. Calculado pelo sistema: ${formatCurrency(item.valor)}.`,
+          badgeClass: 'bg-blue-100 text-blue-800 border-blue-200',
+          severity: 'warning'
+        });
+      }
+
+      // 5. Preço unitário vazio ou zerado na planilha de origem
+      const hasPrecoVazio = item.origemPrecoVazio === true || parseNumericValue(item.preco_unitario) <= 0;
+      if (hasPrecoVazio) {
+        issues.push({
+          type: 'prc_vazio',
+          label: 'Preço Zerado / Ausente',
+          description: `Preço unitário não informado ou zerado na planilha de origem.`,
+          badgeClass: 'bg-orange-100 text-orange-800 border-orange-200',
+          severity: 'warning'
+        });
+      }
+
+      // 6. Volume final permaneceu zerado
+      if (parseNumericValue(item.litros) <= 0 && !hasEncerranteIgual) {
+        issues.push({
+          type: 'vol_zero',
+          label: 'Volume Final Zerado',
+          description: `Volume final permaneceu 0 litros mesmo após cálculo.`,
+          badgeClass: 'bg-red-100 text-red-800 border-red-200',
+          severity: 'critical'
+        });
+      }
+
+      return {
+        item: {
+          ...item,
+          linhaPlanilha: item.linhaPlanilha || (idx + 2)
+        },
+        issues,
+        hasEncerranteIgual,
+        hasEncerranteMenor,
+        hasVolumeVazio,
+        hasTotalVazio,
+        hasPrecoVazio,
+        encDelta: Math.round(encDelta * 10000) / 10000
+      };
+    }).filter(rec => rec.issues.length > 0);
+  }, [data]);
+
+  const inconsistencyStats = useMemo(() => {
+    let countEncIgual = 0;
+    let countEncMenor = 0;
+    let countVolVazio = 0;
+    let countTotVazio = 0;
+    let countPrcVazio = 0;
+
+    inconsistentRecords.forEach(rec => {
+      if (rec.hasEncerranteIgual) countEncIgual++;
+      if (rec.hasEncerranteMenor) countEncMenor++;
+      if (rec.hasVolumeVazio) countVolVazio++;
+      if (rec.hasTotalVazio) countTotVazio++;
+      if (rec.hasPrecoVazio) countPrcVazio++;
+    });
+
+    return {
+      total: inconsistentRecords.length,
+      countEncIgual,
+      countEncMenor,
+      countVolVazio,
+      countTotVazio,
+      countPrcVazio
+    };
+  }, [inconsistentRecords]);
+
+  const filteredInconsistentRecords = useMemo(() => {
+    return inconsistentRecords.filter(rec => {
+      // Sub-filtro
+      if (inconsistencyFilter === 'enc_igual' && !rec.hasEncerranteIgual) return false;
+      if (inconsistencyFilter === 'enc_menor' && !rec.hasEncerranteMenor) return false;
+      if (inconsistencyFilter === 'vol_vazio' && !rec.hasVolumeVazio) return false;
+      if (inconsistencyFilter === 'tot_vazio' && !rec.hasTotalVazio) return false;
+      if (inconsistencyFilter === 'prc_vazio' && !rec.hasPrecoVazio) return false;
+
+      // Busca de texto
+      if (inconsistencySearch.trim()) {
+        const q = inconsistencySearch.toLowerCase().trim();
+        const linhaStr = `linha ${rec.item.linhaPlanilha || ''}`.toLowerCase();
+        const linhaNum = String(rec.item.linhaPlanilha || '');
+        const regStr = String(rec.item.registro || '').toLowerCase();
+        const bicoStr = `bico ${rec.item.bico}`.toLowerCase();
+        const bicoNum = String(rec.item.bico || '').toLowerCase();
+        const frentistaName = String(employeeMap[rec.item.id_frentista] || rec.item.id_frentista || '').toLowerCase();
+        const dataStr = formatDate(rec.item.data).toLowerCase();
+        const horaStr = String(rec.item.hora || '').toLowerCase();
+
+        return linhaStr.includes(q) ||
+          linhaNum.includes(q) ||
+          regStr.includes(q) ||
+          bicoStr.includes(q) ||
+          bicoNum.includes(q) ||
+          frentistaName.includes(q) ||
+          dataStr.includes(q) ||
+          horaStr.includes(q);
+      }
+      return true;
+    });
+  }, [inconsistentRecords, inconsistencyFilter, inconsistencySearch, employeeMap]);
+
+  const totalInconsistencyPages = Math.ceil(filteredInconsistentRecords.length / inconsistenciesPerPage);
+  const paginatedInconsistencies = filteredInconsistentRecords.slice(
+    (inconsistencyPage - 1) * inconsistenciesPerPage,
+    inconsistencyPage * inconsistenciesPerPage
+  );
 
   const employeeEntries = (Object.entries(groupedByEmployee) as [string, FrentistaGroup][]);
   const totalPages = Math.ceil(employeeEntries.length / itemsPerPage);
@@ -916,44 +1275,16 @@ const App = () => {
             <p className="text-gray-500">Filtrado por Frentista • Fuso: Brasil (Brasília)</p>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button 
-              onClick={() => { setImportType('refueling'); setIsImportModalOpen(true); }} 
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold transition-all shadow-md active:bg-yellow-200 focus:bg-yellow-200 ${
-                isImportModalOpen && importType === 'refueling'
-                  ? 'bg-yellow-200 text-yellow-950 border border-yellow-400 shadow-yellow-100'
-                  : 'bg-indigo-600 hover:bg-yellow-200 hover:text-yellow-950 text-white shadow-indigo-100'
-              }`}
-            >
+            <button onClick={() => { setImportType('refueling'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Horustech
             </button>
-            <button 
-              onClick={() => { setImportType('comcept'); setIsImportModalOpen(true); }} 
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold transition-all shadow-md active:bg-yellow-200 focus:bg-yellow-200 ${
-                isImportModalOpen && importType === 'comcept'
-                  ? 'bg-yellow-200 text-yellow-950 border border-yellow-400 shadow-yellow-100'
-                  : 'bg-indigo-600 hover:bg-yellow-200 hover:text-yellow-950 text-white shadow-indigo-100'
-              }`}
-            >
+            <button onClick={() => { setImportType('comcept'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Concept
             </button>
-            <button 
-              onClick={() => { setImportType('hiro'); setIsImportModalOpen(true); }} 
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold transition-all shadow-md active:bg-yellow-200 focus:bg-yellow-200 ${
-                isImportModalOpen && importType === 'hiro'
-                  ? 'bg-yellow-200 text-yellow-950 border border-yellow-400 shadow-yellow-100'
-                  : 'bg-indigo-600 hover:bg-yellow-200 hover:text-yellow-950 text-white shadow-indigo-100'
-              }`}
-            >
+            <button onClick={() => { setImportType('hiro'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md shadow-indigo-100">
               <FileUp size={18} /> Log Hiro
             </button>
-            <button 
-              onClick={() => { setImportType('employees'); setIsImportModalOpen(true); }} 
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold transition-all shadow-sm active:bg-yellow-200 focus:bg-yellow-200 ${
-                isImportModalOpen && importType === 'employees'
-                  ? 'bg-yellow-200 text-yellow-950 border border-yellow-400 shadow-yellow-100'
-                  : 'bg-white border border-indigo-200 text-indigo-600 hover:bg-yellow-200 hover:text-indigo-950'
-              }`}
-            >
+            <button onClick={() => { setImportType('employees'); setIsImportModalOpen(true); }} className="flex items-center gap-2 bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 px-5 py-2.5 rounded-xl font-bold transition-all shadow-sm">
               <UserPlus size={18} /> Importar Funcionários
             </button>
             <button onClick={() => setIsDeleteModalOpen(true)} className="flex items-center gap-2 bg-white border border-red-200 text-red-600 hover:bg-red-50 px-5 py-2.5 rounded-xl font-bold transition-all">
@@ -1031,6 +1362,29 @@ const App = () => {
           >
             <DollarSign size={16} />
             Vendas por Preço
+          </button>
+          <button 
+            onClick={() => {
+              setActiveTab('inconsistencias');
+              setInconsistencyPage(1);
+            }} 
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-bold text-sm transition-all duration-300 min-w-[220px] ${
+              activeTab === 'inconsistencias' 
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-200' 
+                : 'text-gray-600 hover:text-gray-900 hover:bg-amber-50/50'
+            }`}
+          >
+            <AlertTriangle size={16} className={inconsistentRecords.length > 0 && activeTab !== 'inconsistencias' ? 'text-amber-500' : ''} />
+            <span>Auditoria da Planilha</span>
+            {inconsistentRecords.length > 0 && (
+              <span className={`text-[11px] font-black px-2 py-0.5 rounded-full ${
+                activeTab === 'inconsistencias' 
+                  ? 'bg-white text-amber-700' 
+                  : 'bg-red-500 text-white shadow-sm'
+              }`}>
+                {inconsistentRecords.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -1553,6 +1907,470 @@ const App = () => {
                     </tr>
                   </tfoot>
                 </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === 'inconsistencias' && (
+          <div className="space-y-6 mb-8">
+            {/* Header com Descrição */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="p-3 bg-amber-50 text-amber-600 rounded-xl border border-amber-100">
+                    <ShieldAlert size={26} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-black text-gray-900 tracking-tight flex items-center gap-2">
+                      Auditoria e Inconsistências da Planilha
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Rastreabilidade linha por linha de volumes/preços ausentes na planilha de origem e abastecimentos com encerrante inicial igual ao final.
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-3 py-1.5 rounded-xl text-xs font-black border ${
+                  inconsistentRecords.length > 0 ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-green-50 text-green-700 border-green-200'
+                }`}>
+                  {inconsistentRecords.length} registro(s) com alerta
+                </span>
+              </div>
+            </div>
+
+            {/* 4 Cards de Métricas */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="p-3 bg-amber-50 text-amber-600 rounded-xl">
+                  <AlertTriangle size={22} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Total com Alertas</p>
+                  <p className="text-2xl font-black text-gray-900">{inconsistencyStats.total}</p>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="p-3 bg-red-50 text-red-600 rounded-xl">
+                  <AlertCircle size={22} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Enc. Inicial = Final</p>
+                  <p className="text-2xl font-black text-red-600">{inconsistencyStats.countEncIgual}</p>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
+                  <Droplet size={22} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Volume Vazio (Auto)</p>
+                  <p className="text-2xl font-black text-blue-600">{inconsistencyStats.countVolVazio}</p>
+                </div>
+              </div>
+
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex items-center gap-4">
+                <div className="p-3 bg-orange-50 text-orange-600 rounded-xl">
+                  <DollarSign size={22} />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Preço Ausente</p>
+                  <p className="text-2xl font-black text-orange-600">{inconsistencyStats.countPrcVazio}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Painel de Controle de Filtros e Busca */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-4">
+              <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between">
+                {/* Pílulas de Subfiltro */}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => { setInconsistencyFilter('all'); setInconsistencyPage(1); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      inconsistencyFilter === 'all'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    Todos os Problemas ({inconsistencyStats.total})
+                  </button>
+                  <button
+                    onClick={() => { setInconsistencyFilter('enc_igual'); setInconsistencyPage(1); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      inconsistencyFilter === 'enc_igual'
+                        ? 'bg-red-600 text-white shadow-sm'
+                        : 'bg-red-50 text-red-700 hover:bg-red-100 border border-red-100'
+                    }`}
+                  >
+                    🛑 Enc. Inicial = Final ({inconsistencyStats.countEncIgual})
+                  </button>
+                  <button
+                    onClick={() => { setInconsistencyFilter('vol_vazio'); setInconsistencyPage(1); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      inconsistencyFilter === 'vol_vazio'
+                        ? 'bg-amber-600 text-white shadow-sm'
+                        : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-100'
+                    }`}
+                  >
+                    ⚠️ Volume Vazio na Planilha ({inconsistencyStats.countVolVazio})
+                  </button>
+                  <button
+                    onClick={() => { setInconsistencyFilter('tot_vazio'); setInconsistencyPage(1); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      inconsistencyFilter === 'tot_vazio'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-100'
+                    }`}
+                  >
+                    ⚠️ Total Vazio na Planilha ({inconsistencyStats.countTotVazio})
+                  </button>
+                  <button
+                    onClick={() => { setInconsistencyFilter('prc_vazio'); setInconsistencyPage(1); }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                      inconsistencyFilter === 'prc_vazio'
+                        ? 'bg-orange-600 text-white shadow-sm'
+                        : 'bg-orange-50 text-orange-800 hover:bg-orange-100 border border-orange-100'
+                    }`}
+                  >
+                    ⚠️ Preço Zerado ({inconsistencyStats.countPrcVazio})
+                  </button>
+                  {inconsistencyStats.countEncMenor > 0 && (
+                    <button
+                      onClick={() => { setInconsistencyFilter('enc_menor'); setInconsistencyPage(1); }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
+                        inconsistencyFilter === 'enc_menor'
+                          ? 'bg-rose-600 text-white shadow-sm'
+                          : 'bg-rose-50 text-rose-800 hover:bg-rose-100 border border-rose-100'
+                      }`}
+                    >
+                      🛑 Enc. Regressivo ({inconsistencyStats.countEncMenor})
+                    </button>
+                  )}
+                </div>
+
+                {/* Campo de Busca */}
+                <div className="relative w-full lg:w-80">
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Buscar linha, reg., bico, frentista..."
+                    value={inconsistencySearch}
+                    onChange={(e) => {
+                      setInconsistencySearch(e.target.value);
+                      setInconsistencyPage(1);
+                    }}
+                    className="w-full pl-9 pr-8 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-medium focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 outline-none transition-all"
+                  />
+                  {inconsistencySearch && (
+                    <button
+                      onClick={() => { setInconsistencySearch(''); setInconsistencyPage(1); }}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-100">
+                <span>
+                  Exibindo <strong>{filteredInconsistentRecords.length}</strong> registro(s) encontrado(s)
+                </span>
+                {filteredInconsistentRecords.length > 0 && (
+                  <span>
+                    Página <strong>{inconsistencyPage}</strong> de <strong>{totalInconsistencyPages || 1}</strong>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Tabela de Inconsistências */}
+            {filteredInconsistentRecords.length === 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+                <div className="w-16 h-16 bg-green-50 text-green-600 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-green-100">
+                  <CheckCircle2 size={32} />
+                </div>
+                <h3 className="text-lg font-black text-gray-800">
+                  {inconsistentRecords.length === 0 
+                    ? "Nenhuma inconsistência encontrada na planilha!" 
+                    : "Nenhum registro encontrado para este filtro de busca."}
+                </h3>
+                <p className="text-sm text-gray-500 mt-1 max-w-md mx-auto">
+                  {inconsistentRecords.length === 0
+                    ? "Todos os abastecimentos possuem volume, valor total e leituras de encerrante consistentes e preenchidos."
+                    : "Tente alterar os termos da busca ou selecionar outro filtro de inconsistência acima."}
+                </p>
+              </div>
+            ) : (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200 text-xs font-bold text-gray-600 uppercase tracking-wider">
+                        <th className="px-5 py-4">Linha Planilha</th>
+                        <th className="px-5 py-4">Data / Hora</th>
+                        <th className="px-5 py-4">Bico</th>
+                        <th className="px-5 py-4">Frentista</th>
+                        <th className="px-5 py-4">Problemas Detectados</th>
+                        <th className="px-5 py-4">Enc. Inicial</th>
+                        <th className="px-5 py-4">Enc. Final</th>
+                        <th className="px-5 py-4">Volume</th>
+                        <th className="px-5 py-4">Preço</th>
+                        <th className="px-5 py-4">Total</th>
+                        <th className="px-5 py-4 text-center">Diagnóstico</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {paginatedInconsistencies.map((rec) => {
+                        const isExpanded = expandedInconsistencyId === rec.item.id;
+                        const frentistaNome = employeeMap[rec.item.id_frentista] || rec.item.id_frentista || "Desconhecido";
+
+                        return (
+                          <React.Fragment key={rec.item.id}>
+                            <tr className={`hover:bg-amber-50/30 text-sm transition-colors ${isExpanded ? 'bg-amber-50/40' : ''}`}>
+                              {/* Coluna Linha Planilha */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <div className="flex flex-col gap-1 items-start">
+                                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 border border-indigo-200 text-indigo-800 font-black rounded-lg text-xs">
+                                    <FileText size={12} className="text-indigo-600" />
+                                    Linha #{rec.item.linhaPlanilha}
+                                  </span>
+                                  {rec.item.registro && (
+                                    <span className="text-[11px] font-bold text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
+                                      Reg. {rec.item.registro}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Data / Hora */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <div className="flex items-center gap-1.5 text-gray-700 font-medium">
+                                  <Calendar size={13} className="text-gray-400" />
+                                  <span>{formatDate(rec.item.data)}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 text-xs text-green-600 font-bold mt-0.5">
+                                  <Clock size={12} className="text-green-500" />
+                                  <span>{rec.item.hora || "--:--"}</span>
+                                </div>
+                              </td>
+
+                              {/* Bico */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 text-gray-800 font-black rounded-lg text-xs">
+                                  <Fuel size={12} className="text-indigo-600" />
+                                  Bico {rec.item.bico}
+                                </span>
+                              </td>
+
+                              {/* Frentista */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <p className="font-bold text-gray-800 uppercase text-xs truncate max-w-[140px]" title={frentistaNome}>
+                                  {frentistaNome}
+                                </p>
+                                <p className="text-[10px] text-gray-400 font-mono mt-0.5 truncate max-w-[140px]">
+                                  {rec.item.id_frentista}
+                                </p>
+                              </td>
+
+                              {/* Badges de Problemas */}
+                              <td className="px-5 py-4">
+                                <div className="flex flex-wrap gap-1.5 max-w-[260px]">
+                                  {rec.issues.map((issue, idx) => (
+                                    <span
+                                      key={idx}
+                                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-extrabold border ${issue.badgeClass}`}
+                                    >
+                                      {issue.severity === 'critical' ? '🛑' : '⚠️'}
+                                      {issue.label}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+
+                              {/* Enc. Inicial */}
+                              <td className="px-5 py-4 whitespace-nowrap font-mono text-xs">
+                                <span className={`font-bold ${rec.hasEncerranteIgual ? 'text-red-600 font-black bg-red-50 px-1.5 py-0.5 rounded border border-red-200' : 'text-gray-700'}`}>
+                                  {formatNumber(rec.item.enc_inicial || 0)} L
+                                </span>
+                              </td>
+
+                              {/* Enc. Final */}
+                              <td className="px-5 py-4 whitespace-nowrap font-mono text-xs">
+                                <span className={`font-bold ${rec.hasEncerranteIgual ? 'text-red-600 font-black bg-red-50 px-1.5 py-0.5 rounded border border-red-200' : rec.hasEncerranteMenor ? 'text-rose-600 font-black' : 'text-gray-700'}`}>
+                                  {formatNumber(rec.item.enc_final || 0)} L
+                                </span>
+                              </td>
+
+                              {/* Volume (Litros) */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <p className={`font-black ${rec.hasEncerranteIgual || rec.item.litros <= 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                                  {formatNumber(rec.item.litros)} L
+                                </p>
+                                {rec.hasVolumeVazio && (
+                                  <span className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
+                                    Recalculado: Enc. Final - Inicial
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Preço Unitário */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <span className={`font-bold ${rec.hasPrecoVazio ? 'text-orange-600' : 'text-gray-700'}`}>
+                                  {formatCurrency(rec.item.preco_unitario || 0)}
+                                </span>
+                              </td>
+
+                              {/* Valor Total */}
+                              <td className="px-5 py-4 whitespace-nowrap">
+                                <p className="font-black text-gray-900">
+                                  {formatCurrency(rec.item.valor)}
+                                </p>
+                                {rec.hasTotalVazio && (
+                                  <span className="text-[10px] text-blue-800 bg-blue-50 border border-blue-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
+                                    Recalculado: Vol × Preço
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Botão Diagnóstico */}
+                              <td className="px-5 py-4 whitespace-nowrap text-center">
+                                <button
+                                  onClick={() => setExpandedInconsistencyId(isExpanded ? null : rec.item.id)}
+                                  className={`p-2 rounded-xl transition-all ${
+                                    isExpanded 
+                                      ? 'bg-amber-600 text-white shadow-md' 
+                                      : 'bg-gray-100 hover:bg-amber-100 text-gray-600 hover:text-amber-800'
+                                  }`}
+                                  title="Ver diagnóstico da linha"
+                                >
+                                  <Info size={16} />
+                                </button>
+                              </td>
+                            </tr>
+
+                            {/* Acordeão de Diagnóstico Detalhado */}
+                            {isExpanded && (
+                              <tr className="bg-amber-50/60 border-y border-amber-200">
+                                <td colSpan={11} className="p-6">
+                                  <div className="bg-white rounded-xl p-5 border border-amber-200 shadow-sm space-y-4">
+                                    <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                                      <div className="flex items-center gap-2">
+                                        <ShieldAlert size={20} className="text-amber-600" />
+                                        <h4 className="font-black text-gray-900 text-sm">
+                                          Diagnóstico Detalhado da Linha #{rec.item.linhaPlanilha} da Planilha
+                                        </h4>
+                                        {rec.item.registro && (
+                                          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-bold">
+                                            Registro: {rec.item.registro}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <button
+                                        onClick={() => setExpandedInconsistencyId(null)}
+                                        className="text-gray-400 hover:text-gray-600 p-1"
+                                      >
+                                        <X size={16} />
+                                      </button>
+                                    </div>
+
+                                    {/* Lista de Inconsistências com Explicações */}
+                                    <div className="space-y-2">
+                                      <p className="text-xs font-black text-gray-500 uppercase tracking-wider">
+                                        Problemas e Ações Aplicadas:
+                                      </p>
+                                      {rec.issues.map((issue, idx) => (
+                                        <div
+                                          key={idx}
+                                          className={`p-3 rounded-xl border text-xs leading-relaxed ${
+                                            issue.severity === 'critical'
+                                              ? 'bg-red-50 border-red-200 text-red-900'
+                                              : 'bg-amber-50 border-amber-200 text-amber-900'
+                                          }`}
+                                        >
+                                          <strong className="font-black">{issue.label}:</strong> {issue.description}
+                                        </div>
+                                      ))}
+                                    </div>
+
+                                    {/* Comparativo Planilha Original vs Sistema */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-100">
+                                      <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                        <p className="text-xs font-black text-gray-500 uppercase tracking-wider mb-2">
+                                          📄 Valores Lidos da Planilha Original
+                                        </p>
+                                        <ul className="text-xs space-y-1.5 text-gray-700">
+                                          <li><strong>Volume:</strong> {rec.item.rawVolumeOriginal !== undefined && rec.item.rawVolumeOriginal > 0 ? `${formatNumber(rec.item.rawVolumeOriginal)} L` : '<Vazio ou Zerado / R$ ->'}</li>
+                                          <li><strong>Total:</strong> {rec.item.rawTotalOriginal !== undefined && rec.item.rawTotalOriginal > 0 ? formatCurrency(rec.item.rawTotalOriginal) : '<Vazio ou Zerado / R$ ->'}</li>
+                                          <li><strong>Preço:</strong> {rec.item.rawPrecoOriginal !== undefined && rec.item.rawPrecoOriginal > 0 ? formatCurrency(rec.item.rawPrecoOriginal) : '<Não informado>'}</li>
+                                          <li><strong>Enc. Inicial:</strong> {formatNumber(rec.item.enc_inicial || 0)} L</li>
+                                          <li><strong>Enc. Final:</strong> {formatNumber(rec.item.enc_final || 0)} L</li>
+                                        </ul>
+                                      </div>
+
+                                      <div className="bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
+                                        <p className="text-xs font-black text-indigo-900 uppercase tracking-wider mb-2">
+                                          ⚡ Valores Processados / Corrigidos pelo Sistema
+                                        </p>
+                                        <ul className="text-xs space-y-1.5 text-indigo-950">
+                                          <li>
+                                            <strong>Volume Final:</strong> {formatNumber(rec.item.litros)} L
+                                            {rec.hasVolumeVazio && <span className="text-green-700 font-bold ml-1"> (Calculado: Enc. Final - Inicial)</span>}
+                                          </li>
+                                          <li>
+                                            <strong>Total Final:</strong> {formatCurrency(rec.item.valor)}
+                                            {rec.hasTotalVazio && <span className="text-green-700 font-bold ml-1"> (Calculado: Volume × Preço)</span>}
+                                          </li>
+                                          <li><strong>Preço Unitário:</strong> {formatCurrency(rec.item.preco_unitario || 0)}</li>
+                                          <li>
+                                            <strong>Delta de Encerrantes:</strong> {rec.encDelta >= 0 ? `+${formatNumber(rec.encDelta)} L` : `${formatNumber(rec.encDelta)} L`}
+                                            {rec.hasEncerranteIgual && <span className="text-red-700 font-black ml-1"> (ALERTA: Delta = 0,00 L)</span>}
+                                          </li>
+                                        </ul>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Paginação */}
+                {totalInconsistencyPages > 1 && (
+                  <div className="p-4 border-t border-gray-100 flex items-center justify-between">
+                    <p className="text-xs text-gray-500 font-medium">
+                      Mostrando {((inconsistencyPage - 1) * inconsistenciesPerPage) + 1} a {Math.min(inconsistencyPage * inconsistenciesPerPage, filteredInconsistentRecords.length)} de {filteredInconsistentRecords.length} registros
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setInconsistencyPage(p => Math.max(1, p - 1))}
+                        disabled={inconsistencyPage === 1}
+                        className="p-2 border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-xs font-bold flex items-center gap-1"
+                      >
+                        <ChevronLeft size={16} /> Anterior
+                      </button>
+                      <span className="text-xs font-bold text-gray-700 px-3 py-1 bg-gray-100 rounded-lg">
+                        {inconsistencyPage} / {totalInconsistencyPages}
+                      </span>
+                      <button
+                        onClick={() => setInconsistencyPage(p => Math.min(totalInconsistencyPages, p + 1))}
+                        disabled={inconsistencyPage === totalInconsistencyPages}
+                        className="p-2 border border-gray-200 rounded-xl hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-all text-xs font-bold flex items-center gap-1"
+                      >
+                        Próximo <ChevronRight size={16} />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

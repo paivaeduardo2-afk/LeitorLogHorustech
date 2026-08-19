@@ -1,5 +1,8 @@
 {
-  "description": "Leitor de log HORUSTECH",
+  "description": "Leitor de log HORUSTECH com cálculo automático de volume e total a partir dos encerrantes",
   "requestFramePermissions": [],
-  "name": "Leitor de log HORUSTECH"
+  "name": "Leitor de log HORUSTECH",
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
