@@ -55,7 +55,6 @@ interface Refueling {
   enc_inicial?: number;
   enc_final?: number;
   ownerId: string;
-  isDivergence?: boolean;
 }
 
 interface Employee {
@@ -679,19 +678,7 @@ const App = () => {
   }, [filteredData, employeeMap]);
 
   const groupedByBico = useMemo(() => {
-    const groups: Record<string, { 
-      bico: string; 
-      totalLiters: number; 
-      totalValue: number; 
-      count: number; 
-      items: Refueling[];
-      divergenceItem?: Refueling | null;
-      hasDivergence?: boolean;
-      diffLiters?: number;
-      diffValue?: number;
-      encerranteLiters?: number;
-      refuelingLiters?: number;
-    }> = {};
+    const groups: Record<string, { bico: string; totalLiters: number; totalValue: number; count: number; items: Refueling[] }> = {};
     
     filteredData.forEach(item => {
       const bico = String(item.bico || 'B?');
@@ -705,79 +692,15 @@ const App = () => {
     });
     
     Object.keys(groups).forEach(b => {
-      const g = groups[b];
-      // Sort items chronologically ascending to evaluate meter range
-      const sortedAsc = [...g.items].sort((x, y) => {
+      groups[b].items.sort((x, y) => {
         const timeX = x.data ? new Date(x.data).getTime() : 0;
         const timeY = y.data ? new Date(y.data).getTime() : 0;
-        if (timeX !== timeY) return (isNaN(timeX) ? 0 : timeX) - (isNaN(timeY) ? 0 : timeY);
-        const horaX = String(x.hora || '');
-        const horaY = String(y.hora || '');
-        return horaX.localeCompare(horaY);
-      });
-
-      const firstWithInicial = sortedAsc.find(x => (x.enc_inicial || 0) > 0);
-      const lastWithFinal = [...sortedAsc].reverse().find(x => (x.enc_final || 0) > 0);
-
-      if (firstWithInicial && lastWithFinal) {
-        const periodEncInicial = firstWithInicial.enc_inicial!;
-        const periodEncFinal = lastWithFinal.enc_final!;
-
-        if (periodEncFinal > periodEncInicial) {
-          const encerranteLiters = periodEncFinal - periodEncInicial;
-          const refuelingLiters = g.totalLiters;
-          const diffLiters = encerranteLiters - refuelingLiters;
-
-          if (Math.abs(diffLiters) >= 0.01) {
-            const lastItem = sortedAsc[sortedAsc.length - 1];
-            const lastItemWithPrice = [...sortedAsc].reverse().find(x => (x.preco_unitario || 0) > 0);
-            const precoUnitario = lastItemWithPrice?.preco_unitario || (g.totalLiters > 0 ? g.totalValue / g.totalLiters : 0) || 0;
-            const diffValue = diffLiters * precoUnitario;
-
-            const divergenceItem: Refueling = {
-              id: `divergence_${g.bico}`,
-              id_frentista: 'DIVERGÊNCIA DE ENCERRANTE',
-              data: lastItem ? lastItem.data : new Date().toISOString(),
-              hora: lastItem ? lastItem.hora : '--:--',
-              bico: g.bico,
-              valor: diffValue,
-              litros: diffLiters,
-              preco_unitario: precoUnitario,
-              enc_inicial: periodEncInicial,
-              enc_final: periodEncFinal,
-              ownerId: currentUser?.id || '',
-              isDivergence: true
-            };
-
-            g.divergenceItem = divergenceItem;
-            g.hasDivergence = true;
-            g.diffLiters = diffLiters;
-            g.diffValue = diffValue;
-            g.encerranteLiters = encerranteLiters;
-            g.refuelingLiters = refuelingLiters;
-
-            // Include divergence refueling item in items list
-            g.items.push(divergenceItem);
-            g.totalLiters += diffLiters;
-            g.totalValue += diffValue;
-            g.count += 1;
-          }
-        }
-      }
-
-      // Sort items descending for table display
-      g.items.sort((x, y) => {
-        const timeX = x.data ? new Date(x.data).getTime() : 0;
-        const timeY = y.data ? new Date(y.data).getTime() : 0;
-        if (timeX !== timeY) return (isNaN(timeY) ? 0 : timeY) - (isNaN(timeX) ? 0 : timeX);
-        const horaX = String(x.hora || '');
-        const horaY = String(y.hora || '');
-        return horaY.localeCompare(horaX);
+        return (isNaN(timeY) ? 0 : timeY) - (isNaN(timeX) ? 0 : timeX);
       });
     });
     
     return Object.values(groups).sort((a, b) => String(a.bico).localeCompare(String(b.bico), undefined, { numeric: true, sensitivity: 'base' }));
-  }, [filteredData, currentUser]);
+  }, [filteredData]);
 
   const readingsMismatch = useMemo(() => {
     const bicoGroups: Record<string, Refueling[]> = {};
@@ -1337,34 +1260,18 @@ const App = () => {
                 const valPct = Math.round((bicoGroup.totalValue / (globalStats.totalValue || 1)) * 100);
                 
                 return (
-                  <div key={bicoGroup.bico} className={`bg-white rounded-2xl shadow-sm border overflow-hidden group transition-all ${
-                    bicoGroup.hasDivergence ? 'border-red-300 ring-2 ring-red-400/20 bg-red-50/10' : 'border-gray-100'
-                  }`}>
+                  <div key={bicoGroup.bico} className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden group">
                     <div onClick={() => setExpandedBico(expandedBico === bicoGroup.bico ? null : bicoGroup.bico)} className="p-5 flex flex-wrap items-center justify-between gap-4 cursor-pointer hover:bg-gray-50 transition-colors">
                       <div className="flex items-center gap-4 min-w-[200px]">
-                        <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white font-black shadow-md uppercase transition-colors ${
-                          bicoGroup.hasDivergence ? 'bg-red-600 shadow-red-200' : 'bg-indigo-600 shadow-indigo-100'
-                        }`}>
+                        <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-black shadow-md shadow-indigo-100 uppercase">
                           {bicoGroup.bico}
                         </div>
                         <div>
-                          <div className="flex items-center gap-2">
-                            <h3 className="text-lg font-black text-gray-800 uppercase leading-tight">Bico {bicoGroup.bico}</h3>
-                            {bicoGroup.hasDivergence && (
-                              <span className="text-[10px] text-red-700 font-extrabold bg-red-100 border border-red-300 px-2 py-0.5 rounded flex items-center gap-1 shadow-xs uppercase tracking-wider">
-                                <AlertTriangle size={12} className="text-red-600" /> Divergência
-                              </span>
-                            )}
-                          </div>
+                          <h3 className="text-lg font-black text-gray-800 uppercase leading-tight">Bico {bicoGroup.bico}</h3>
                           <div className="flex gap-2 items-center mt-1">
                             <span className="text-[10px] text-gray-500 font-bold bg-gray-100 px-2 py-0.5 rounded">
                               {bicoGroup.count} abastecimentos
                             </span>
-                            {bicoGroup.hasDivergence && (
-                              <span className="text-[10px] text-red-800 font-bold bg-red-100 border border-red-200 px-2 py-0.5 rounded">
-                                Dif: {bicoGroup.diffLiters && bicoGroup.diffLiters > 0 ? '+' : ''}{formatNumber(bicoGroup.diffLiters || 0)} L
-                              </span>
-                            )}
                           </div>
                         </div>
                       </div>
@@ -1394,7 +1301,7 @@ const App = () => {
                       <div className="flex items-center justify-end gap-6 min-w-[200px]">
                         <div className="text-right">
                           <p className="text-xs text-gray-400 font-bold uppercase mb-0.5">Valor Total</p>
-                          <p className={`font-black text-2xl tracking-tight ${bicoGroup.hasDivergence ? 'text-red-600' : 'text-indigo-600'}`}>
+                          <p className="font-black text-indigo-600 text-2xl tracking-tight">
                             {formatCurrency(bicoGroup.totalValue)}
                           </p>
                         </div>
@@ -1406,19 +1313,6 @@ const App = () => {
 
                     {expandedBico === bicoGroup.bico && (
                       <div className="border-t border-gray-100 bg-gray-50/50 p-6 animate-in slide-in-from-top-2 duration-200">
-                        {bicoGroup.hasDivergence && (
-                          <div className="mb-4 p-3 bg-red-100 border border-red-300 rounded-xl flex items-center justify-between text-red-900 text-xs font-bold">
-                            <div className="flex items-center gap-2">
-                              <AlertTriangle size={18} className="text-red-600 flex-shrink-0" />
-                              <span>
-                                Divergência identificada no período selecionado entre a soma dos abastecimentos ({formatNumber(bicoGroup.refuelingLiters || 0)} L) e os encerrantes inicial e final ({formatNumber(bicoGroup.encerranteLiters || 0)} L, de {formatNumber(bicoGroup.divergenceItem?.enc_inicial || 0)} a {formatNumber(bicoGroup.divergenceItem?.enc_final || 0)}). Abastecimento de diferença gerado abaixo.
-                              </span>
-                            </div>
-                            <span className="bg-red-200 text-red-950 px-2.5 py-1 rounded-lg font-black whitespace-nowrap">
-                              Diferença: {bicoGroup.diffLiters && bicoGroup.diffLiters > 0 ? '+' : ''}{formatNumber(bicoGroup.diffLiters || 0)} L
-                            </span>
-                          </div>
-                        )}
                         <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                           <table className="w-full text-left">
                             <thead>
@@ -1434,71 +1328,30 @@ const App = () => {
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
-                              {bicoGroup.items.map((item) => {
-                                if (item.isDivergence) {
-                                  return (
-                                    <tr key={item.id} className="bg-red-100/90 hover:bg-red-200/80 text-red-950 font-bold text-sm transition-colors border-l-4 border-red-600">
-                                      <td className="px-6 py-4">
-                                        <div className="flex items-center gap-2 text-red-700 font-extrabold">
-                                          <AlertTriangle size={15} className="text-red-600 flex-shrink-0" />
-                                          {formatDate(item.data)}
-                                        </div>
-                                      </td>
-                                      <td className="px-6 py-4">
-                                        <div className="flex items-center gap-2 text-red-700 font-extrabold">
-                                          <Clock size={14} className="text-red-600" />
-                                          {item.hora || "--:--"}
-                                        </div>
-                                      </td>
-                                      <td className="px-6 py-4">
-                                        <span className="bg-red-200 text-red-900 border border-red-300 px-2.5 py-1 rounded-lg text-xs font-black uppercase tracking-wider inline-flex items-center gap-1 shadow-xs">
-                                          <AlertTriangle size={12} className="text-red-700" />
-                                          DIVERGÊNCIA DE ENCERRANTE
-                                        </span>
-                                      </td>
-                                      <td className="px-6 py-4 font-black text-red-700 text-base">
-                                        {item.litros > 0 ? '+' : ''}{formatNumber(item.litros)} L
-                                      </td>
-                                      <td className="px-6 py-4 text-red-800 font-bold">
-                                        {formatCurrency(item.preco_unitario || 0)}
-                                      </td>
-                                      <td className="px-6 py-4 font-black text-red-900 text-base">
-                                        {formatCurrency(item.valor)}
-                                      </td>
-                                      <td className="px-6 py-4 text-red-700 font-extrabold">
-                                        {formatNumber(item.enc_inicial || 0)}
-                                      </td>
-                                      <td className="px-6 py-4 text-red-700 font-extrabold">
-                                        {formatNumber(item.enc_final || 0)}
-                                      </td>
-                                    </tr>
-                                  );
-                                }
-                                return (
-                                  <tr key={item.id} className="hover:bg-gray-50 text-sm transition-colors">
-                                    <td className="px-6 py-4">
-                                      <div className="flex items-center gap-2">
-                                        <Calendar size={14} className="text-gray-400" />
-                                        {formatDate(item.data)}
-                                      </div>
-                                    </td>
-                                    <td className="px-6 py-4">
-                                      <div className="flex items-center gap-2 text-green-600 font-medium">
-                                        <Clock size={14} className="text-green-500" />
-                                        {item.hora || "--:--"}
-                                      </div>
-                                    </td>
-                                    <td className="px-6 py-4 font-bold text-gray-700 uppercase">
-                                      {employeeMap[item.id_frentista] || item.id_frentista || "Desconhecido"}
-                                    </td>
-                                    <td className="px-6 py-4">{formatNumber(item.litros)} L</td>
-                                    <td className="px-6 py-4">{formatCurrency(item.preco_unitario || 0)}</td>
-                                    <td className="px-6 py-4 font-black">{formatCurrency(item.valor)}</td>
-                                    <td className={`px-6 py-4 ${readingsMismatch.inicialMismatchedIds.has(item.id) ? 'text-red-600 font-extrabold bg-red-50' : 'text-gray-500'}`}>{formatNumber(item.enc_inicial || 0)}</td>
-                                    <td className={`px-6 py-4 ${readingsMismatch.finalMismatchedIds.has(item.id) ? 'text-red-600 font-extrabold bg-red-50' : 'text-gray-500'}`}>{formatNumber(item.enc_final || 0)}</td>
-                                  </tr>
-                                );
-                              })}
+                              {bicoGroup.items.map((item) => (
+                                <tr key={item.id} className="hover:bg-gray-50 text-sm transition-colors">
+                                  <td className="px-6 py-4">
+                                    <div className="flex items-center gap-2">
+                                      <Calendar size={14} className="text-gray-400" />
+                                      {formatDate(item.data)}
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4">
+                                    <div className="flex items-center gap-2 text-green-600 font-medium">
+                                      <Clock size={14} className="text-green-500" />
+                                      {item.hora || "--:--"}
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4 font-bold text-gray-700 uppercase">
+                                    {employeeMap[item.id_frentista] || item.id_frentista || "Desconhecido"}
+                                  </td>
+                                  <td className="px-6 py-4">{formatNumber(item.litros)} L</td>
+                                  <td className="px-6 py-4">{formatCurrency(item.preco_unitario || 0)}</td>
+                                  <td className="px-6 py-4 font-black">{formatCurrency(item.valor)}</td>
+                                  <td className={`px-6 py-4 ${readingsMismatch.inicialMismatchedIds.has(item.id) ? 'text-red-600 font-extrabold bg-red-50' : 'text-gray-500'}`}>{formatNumber(item.enc_inicial || 0)}</td>
+                                  <td className={`px-6 py-4 ${readingsMismatch.finalMismatchedIds.has(item.id) ? 'text-red-600 font-extrabold bg-red-50' : 'text-gray-500'}`}>{formatNumber(item.enc_final || 0)}</td>
+                                </tr>
+                              ))}
                             </tbody>
                           </table>
                         </div>
@@ -1758,8 +1611,4 @@ const App = () => {
   );
 };
 
-const container = document.getElementById('root')!;
-if (!(container as any)._reactRoot) {
-  (container as any)._reactRoot = createRoot(container);
-}
-(container as any)._reactRoot.render(<App />);
+createRoot(document.getElementById('root')!).render(<App />);
