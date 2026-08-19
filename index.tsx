@@ -1,8 +1,30 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import * as XLSX from 'xlsx';
+import { parseImportText } from './importer';
 import { loadPersistedValue, persistValue } from './storage';
+import type {
+  AppUser,
+  Employee,
+  FrentistaGroup,
+  ImportStats,
+  ImportType,
+  InconsistentRecord,
+  Notice,
+  Refueling,
+  RefuelingIssue
+} from './types';
+import {
+  formatCurrency,
+  formatDate,
+  formatNumber,
+  getDateOnlyString,
+  getInitials,
+  getRefuelingFingerprint,
+  normalizePersistedRefuelings,
+  parseNumericValue,
+  sumRefuelingTotals
+} from './utils';
 import { 
   LogOut, 
   Trash2, 
@@ -37,399 +59,11 @@ import {
   CheckCircle2
 } from 'lucide-react';
 
-// --- Types ---
-
-type UserRole = 'admin' | 'frentista';
-
-interface AppUser {
-  id: string;
-  name: string;
-  role: UserRole;
-  frentistaId?: string;
-}
-
-interface Refueling {
-  id: string;
-  id_frentista: string;
-  data: string; // ISO string
-  hora?: string; // Valor bruto da coluna 10
-  bico: string;
-  valor: number; // Valor Total
-  litros: number;
-  preco_unitario?: number;
-  enc_inicial?: number;
-  enc_final?: number;
-  ownerId: string;
-  // Campos para auditoria e rastreabilidade da planilha:
-  linhaPlanilha?: number; // Linha real da planilha (ex: linha 2, linha 7079)
-  registro?: string; // Número de registro do log/planilha (ex: 2197, 2750)
-  origemVolumeVazio?: boolean; // Se o volume original veio vazio/0
-  origemTotalVazio?: boolean; // Se o valor total original veio vazio/0
-  origemPrecoVazio?: boolean; // Se o preço original veio vazio/0
-  rawVolumeOriginal?: number; // Volume original antes do cálculo
-  rawTotalOriginal?: number; // Total original antes do cálculo
-  rawPrecoOriginal?: number; // Preço original antes do cálculo
-}
-
-export interface RefuelingIssue {
-  type: 'enc_igual' | 'enc_menor' | 'vol_vazio' | 'tot_vazio' | 'prc_vazio' | 'vol_zero' | 'tot_zero';
-  label: string;
-  description: string;
-  badgeClass: string;
-  severity: 'critical' | 'warning' | 'info';
-}
-
-export interface InconsistentRecord {
-  item: Refueling;
-  issues: RefuelingIssue[];
-  hasEncerranteIgual: boolean;
-  hasEncerranteMenor: boolean;
-  hasVolumeVazio: boolean;
-  hasTotalVazio: boolean;
-  hasPrecoVazio: boolean;
-  encDelta: number;
-}
-
-interface Employee {
-  id_cartao: string;
-  nome: string;
-}
-
-interface FrentistaGroup {
-  displayName: string;
-  cardIds: string[];
-  items: Refueling[];
-  totalLiters: number;
-  totalValue: number;
-  count: number;
-}
-
-interface ImportStats {
-  sourceRows: number;
-  acceptedRows: number;
-}
-
-interface Notice {
-  type: 'success' | 'error' | 'warning';
-  message: string;
-}
-
 // --- Constants ---
 
 const MOCK_USERS: AppUser[] = [
   { id: '1', name: 'Administrador', role: 'admin' },
 ];
-
-const BR_TIMEZONE = 'America/Sao_Paulo';
-
-// --- Utilities ---
-
-const formatCurrency = (val: number) => {
-  const num = typeof val === 'number' && !isNaN(val) ? val : 0;
-  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(num);
-};
-
-const formatNumber = (val: number) => {
-  const num = typeof val === 'number' && !isNaN(val) ? val : 0;
-  return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(num);
-};
-
-const formatDate = (dateStr: string) => {
-  if (!dateStr) return 'Data Inválida';
-  const d = new Date(dateStr);
-  if (isNaN(d.getTime())) return 'Data Inválida';
-  return d.toLocaleDateString('pt-BR', { timeZone: BR_TIMEZONE });
-};
-
-const getInitials = (name: string) => {
-  if (!name) return '??';
-  const parts = String(name).split(' ').filter(p => p.length > 0);
-  if (parts.length === 0) return '??';
-  if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-};
-
-const getDateOnlyString = (isoString: string): string => {
-  try {
-    if (!isoString) return "";
-    const d = new Date(isoString);
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleDateString('en-CA', { timeZone: BR_TIMEZONE });
-  } catch {
-    return "";
-  }
-};
-
-const parseNumericValue = (val: any): number => {
-  if (val === null || val === undefined) return 0;
-  if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  
-  let str = String(val).trim();
-  if (!str || str === '-' || str === '--' || str === 'N/A' || str === 'null' || str === 'undefined') return 0;
-  
-  // Remover símbolo de moeda "R$" ou "$" e espaços
-  str = str.replace(/R\$/gi, '').replace(/\$/g, '').trim();
-  if (!str || str === '-' || str === '.') return 0;
-  
-  // Tratar pontuação brasileira (1.234.567,89) vs internacional (1,234,567.89)
-  if (str.includes('.') && str.includes(',')) {
-    if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
-      str = str.replace(/\./g, '').replace(',', '.');
-    } else {
-      str = str.replace(/,/g, '');
-    }
-  } else if (str.includes(',')) {
-    str = str.replace(',', '.');
-  }
-  
-  str = str.replace(/[^0-9.-]/g, '');
-  if (!str || str === '-' || str === '.') return 0;
-  
-  const num = parseFloat(str);
-  return isNaN(num) ? 0 : num;
-};
-
-// Calcula e preenche automaticamente Volume (Enc. Final - Enc. Inicial) e Total (Volume * Preço)
-const calculateVolumeAndTotal = (
-  rawVolume: number,
-  rawTotal: number,
-  rawPreco: number,
-  encInicial: number,
-  encFinal: number
-): { volume: number; valorTotal: number; precoUnitario: number } => {
-  let volume = rawVolume > 0 ? rawVolume : 0;
-  let valorTotal = rawTotal > 0 ? rawTotal : 0;
-  let precoUnitario = rawPreco > 0 ? rawPreco : 0;
-
-  // 1. Se o volume estiver vazio ou zerado, calcula: Encerrante Final - Encerrante Inicial
-  if (volume <= 0 && encFinal > 0 && encInicial > 0 && encFinal >= encInicial) {
-    volume = Math.round((encFinal - encInicial) * 10000) / 10000;
-  }
-
-  // Se volume ainda estiver zerado, mas tiver total e preço
-  if (volume <= 0 && valorTotal > 0 && precoUnitario > 0) {
-    volume = Math.round((valorTotal / precoUnitario) * 10000) / 10000;
-  }
-
-  // 2. Se o total estiver vazio ou zerado, calcula: Volume * Preço Unitário
-  if (valorTotal <= 0 && volume > 0 && precoUnitario > 0) {
-    valorTotal = Math.round((volume * precoUnitario) * 100) / 100;
-  }
-
-  // 3. Se o preço unitário estiver vazio ou zerado, calcula: Valor Total / Volume
-  if (precoUnitario <= 0 && volume > 0 && valorTotal > 0) {
-    precoUnitario = Math.round((valorTotal / volume) * 10000) / 10000;
-  }
-
-  // 4. Se o total ainda estiver zerado após calcular volume e preço
-  if (valorTotal <= 0 && volume > 0 && precoUnitario > 0) {
-    valorTotal = Math.round((volume * precoUnitario) * 100) / 100;
-  }
-
-  return {
-    volume: isNaN(volume) ? 0 : volume,
-    valorTotal: isNaN(valorTotal) ? 0 : valorTotal,
-    precoUnitario: isNaN(precoUnitario) ? 0 : precoUnitario,
-  };
-};
-
-const normalizeHeader = (header: string): string => {
-  return String(header || '')
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9_]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-};
-
-const parseDelimitedText = (text: string, delimiter: string): string[][] => {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (char === '"') {
-      if (inQuotes && text[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === delimiter && !inQuotes) {
-      row.push(current.trim());
-      current = '';
-    } else if ((char === '\n' || char === '\r') && !inQuotes) {
-      if (char === '\r' && text[i + 1] === '\n') i += 1;
-      row.push(current.trim());
-      if (row.some(value => value !== '')) rows.push(row);
-      row = [];
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  row.push(current.trim());
-  if (row.some(value => value !== '')) rows.push(row);
-  return rows;
-};
-
-const countDelimiterOutsideQuotes = (line: string, delimiter: string): number => {
-  let count = 0;
-  let inQuotes = false;
-  for (let index = 0; index < line.length; index += 1) {
-    if (line[index] === '"') {
-      if (inQuotes && line[index + 1] === '"') index += 1;
-      else inQuotes = !inQuotes;
-    } else if (!inQuotes && line[index] === delimiter) {
-      count += 1;
-    }
-  }
-  return count;
-};
-
-const findCol = (row: Record<string, any>, values: string[], aliases: string[], fallbackIndex?: number): any => {
-  for (const alias of aliases) {
-    const norm = normalizeHeader(alias);
-    if (row[norm] !== undefined && row[norm] !== '') {
-      return row[norm];
-    }
-  }
-  if (fallbackIndex !== undefined && fallbackIndex < values.length && values[fallbackIndex] !== undefined) {
-    return values[fallbackIndex];
-  }
-  return '';
-};
-
-const isValidDateParts = (year: number, month: number, day: number, hour: number, minute: number, second: number) => {
-  const date = new Date(year, month, day, hour, minute, second);
-  return date.getFullYear() === year
-    && date.getMonth() === month
-    && date.getDate() === day
-    && date.getHours() === hour
-    && date.getMinutes() === minute
-    && date.getSeconds() === second;
-};
-
-const parseDateRobust = (dateStr: unknown): string => {
-  if (!dateStr) return '';
-  const s = String(dateStr).trim();
-  if (!s) return '';
-  const dmyMatch = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
-  if (dmyMatch) {
-    const day = parseInt(dmyMatch[1], 10);
-    const month = parseInt(dmyMatch[2], 10) - 1; 
-    let year = parseInt(dmyMatch[3], 10);
-    if (year < 100) year += 2000;
-    const hour = dmyMatch[4] ? parseInt(dmyMatch[4], 10) : 0;
-    const min = dmyMatch[5] ? parseInt(dmyMatch[5], 10) : 0;
-    const sec = dmyMatch[6] ? parseInt(dmyMatch[6], 10) : 0;
-    if (isValidDateParts(year, month, day, hour, min, sec)) {
-      return new Date(year, month, day, hour, min, sec).toISOString();
-    }
-    return '';
-  }
-  const ymdMatch = s.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
-  if (ymdMatch) {
-    const year = parseInt(ymdMatch[1], 10);
-    const month = parseInt(ymdMatch[2], 10) - 1;
-    const day = parseInt(ymdMatch[3], 10);
-    const hour = ymdMatch[4] ? parseInt(ymdMatch[4], 10) : 0;
-    const min = ymdMatch[5] ? parseInt(ymdMatch[5], 10) : 0;
-    const sec = ymdMatch[6] ? parseInt(ymdMatch[6], 10) : 0;
-    if (isValidDateParts(year, month, day, hour, min, sec)) {
-      return new Date(year, month, day, hour, min, sec).toISOString();
-    }
-    return '';
-  }
-  const fallback = new Date(s);
-  return isNaN(fallback.getTime()) ? '' : fallback.toISOString();
-};
-
-const extractDateTime = (raw: unknown): { dateIso: string, horaStr: string } => {
-  if (!raw) {
-    return { dateIso: '', horaStr: '' };
-  }
-
-  const s = String(raw).trim();
-  let horaStr = '';
-
-  const timeMatch = s.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
-  if (timeMatch) {
-    let t = timeMatch[1];
-    const parts = t.split(':');
-    if (parts[0].length === 1) {
-      parts[0] = '0' + parts[0];
-    }
-    if (parts.length === 2) {
-      parts.push('00');
-    }
-    horaStr = parts.join(':');
-  }
-
-  const dateIso = parseDateRobust(s);
-  return { dateIso, horaStr };
-};
-
-const getRefuelingFingerprint = (item: Refueling): string => [
-  item.registro || '',
-  item.data,
-  item.hora || '',
-  item.bico,
-  item.id_frentista,
-  item.enc_inicial ?? '',
-  item.enc_final ?? '',
-  item.litros,
-  item.valor
-].join('|').toLowerCase();
-
-const createStableId = (fingerprint: string): string => {
-  let hash = 2166136261;
-  for (let index = 0; index < fingerprint.length; index += 1) {
-    hash ^= fingerprint.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `abast-${(hash >>> 0).toString(36)}`;
-};
-
-const isMeaningfulRefueling = (item: Refueling): boolean => Boolean(
-  item.data
-  && item.bico
-  && item.bico !== 'B?'
-  && (item.litros > 0 || item.valor > 0 || (item.enc_final ?? 0) > 0)
-);
-
-const normalizePersistedRefuelings = (value: unknown): Refueling[] => {
-  if (!Array.isArray(value)) return [];
-
-  return value.map((item, index) => {
-    const encInicial = parseNumericValue(item.enc_inicial);
-    const encFinal = parseNumericValue(item.enc_final);
-    const rawVolume = item.rawVolumeOriginal !== undefined ? parseNumericValue(item.rawVolumeOriginal) : parseNumericValue(item.litros);
-    const rawTotal = item.rawTotalOriginal !== undefined ? parseNumericValue(item.rawTotalOriginal) : parseNumericValue(item.valor);
-    const rawPreco = item.rawPrecoOriginal !== undefined ? parseNumericValue(item.rawPrecoOriginal) : parseNumericValue(item.preco_unitario);
-    const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
-
-    return {
-      ...item,
-      linhaPlanilha: item.linhaPlanilha || (index + 2),
-      registro: item.registro || '',
-      litros: volume,
-      valor: valorTotal,
-      preco_unitario: precoUnitario,
-      enc_inicial: encInicial,
-      enc_final: encFinal,
-      origemVolumeVazio: item.origemVolumeVazio !== undefined ? item.origemVolumeVazio : rawVolume <= 0,
-      origemTotalVazio: item.origemTotalVazio !== undefined ? item.origemTotalVazio : rawTotal <= 0,
-      origemPrecoVazio: item.origemPrecoVazio !== undefined ? item.origemPrecoVazio : rawPreco <= 0,
-      rawVolumeOriginal: rawVolume,
-      rawTotalOriginal: rawTotal,
-      rawPrecoOriginal: rawPreco
-    } as Refueling;
-  });
-};
 
 // --- Components ---
 
@@ -470,7 +104,7 @@ const App = () => {
   const [expandedEncerrante, setExpandedEncerrante] = useState<string | null>(null);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [importType, setImportType] = useState<'refueling' | 'comcept' | 'hiro' | 'employees'>('refueling');
+  const [importType, setImportType] = useState<ImportType>('refueling');
   const [confirmDeleteText, setConfirmDeleteText] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -626,241 +260,8 @@ const App = () => {
     return map;
   }, [employees]);
 
-  const parseCSV = (text: string, type: 'refueling' | 'comcept' | 'hiro' | 'employees'): any[] => {
-    if (!currentUser) return [];
-    // Remove BOM if exists
-    const cleanText = text.replace(/^\uFEFF/, '');
-    const firstLine = cleanText.split(/\r?\n/, 1)[0] || '';
-    if (!firstLine.trim()) return [];
-    
-    const countSemi = countDelimiterOutsideQuotes(firstLine, ';');
-    const countComma = countDelimiterOutsideQuotes(firstLine, ',');
-    const countTab = countDelimiterOutsideQuotes(firstLine, '\t');
-    let delimiter = ';';
-    if (countTab > countSemi && countTab > countComma) delimiter = '\t';
-    else if (countComma > countSemi) delimiter = ',';
-    else delimiter = ';';
-
-    const rows = parseDelimitedText(cleanText, delimiter);
-    if (rows.length < 2) return [];
-
-    const headers = rows[0].map(h => normalizeHeader(h));
-    const result: any[] = [];
-    let acceptedRows = 0;
-
-    for (let i = 1; i < rows.length; i++) {
-      try {
-        const values = rows[i];
-        const row: Record<string, any> = {};
-        headers.forEach((header, index) => { 
-          if (header) row[header] = values[index]; 
-        });
-
-        if (type === 'refueling') {
-          // Log Horustech:
-          // Coluna 1 (index 0): Registro
-          // Coluna 2 (index 1): Bico
-          // Coluna 3 (index 2): Prod.
-          // Coluna 4 (index 3): Tanq
-          // Coluna 5 (index 4): Total (Total de Vendas)
-          // Coluna 6 (index 5): Volume (Litros)
-          // Coluna 7 (index 6): Preço Unitário (Preço de Venda / Pre)
-          // Coluna 8 (index 7): Tempo
-          // Coluna 9 (index 8): Data
-          // Coluna 10 (index 9): Hora
-          // Coluna 11 (index 10): Encerrante Inicial
-          // Coluna 12 (index 11): Encerrante Final
-          // Coluna 13 (index 12): ID Frentista
-          const registroVal = findCol(row, values, ['registro', 'reg', 'num_registro', 'id_registro'], 0);
-          const frentistaId = findCol(row, values, ['id frentista', 'id_frentista', 'frentista', 'id frent', 'cartao', 'card', 'id frentista 1', 'id_frent'], 12) || 'N/A';
-          const dateRaw = findCol(row, values, ['data', 'date', 'data_hora', 'data hora', 'dt abast', 'datahora', 'timestamp'], 8);
-          const horaRaw = findCol(row, values, ['hora', 'hour', 'time', 'hr abast'], 9);
-          const bicoRaw = findCol(row, values, ['bico', 'id_bico', 'id bico', 'nozzle', 'num bico', 'bico id'], 1) || 'B?';
-          
-          let encInicial = parseNumericValue(findCol(row, values, ['enc inicial', 'enc_inicial', 'enc. inicial', 'enc.inicial', 'encinicial', 'totals_volume_init', 'encerrante inicial', 'encerrante_inicial', 'inicial', 'reading start'], 10));
-          let encFinal = parseNumericValue(findCol(row, values, ['enc final', 'enc_final', 'enc. final', 'enc.final', 'encfinal', 'totals_volume_final', 'encerrante final', 'encerrante_final', 'final', 'reading end'], 11));
-          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'quantidade', 'liters', 'vol', 'qtd', 'litragem'], 5));
-          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'valor total', 'valortotal', 'price', 'total venda', 'total abastecimento', 'vlr total'], 4));
-          let rawPreco = parseNumericValue(findCol(row, values, ['preco', 'preço', 'preco unitario', 'preço unitário', 'preco_unitario', 'pre', 'unit price', 'unit_price', 'preco de venda', 'preço de venda', 'valor unitario'], 6));
-
-          const origemVolumeVazio = rawVolume <= 0;
-          const origemTotalVazio = rawTotal <= 0;
-          const origemPrecoVazio = rawPreco <= 0;
-
-          // Executa a regra solicitada: quando total e volume estiverem vazios/zerados,
-          // volume = encFinal - encInicial, e total = volume * preco
-          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
-
-          const newItem: Refueling = {
-            id: '',
-            id_frentista: String(frentistaId).trim(),
-            data: parseDateRobust(dateRaw),
-            hora: String(horaRaw || '').trim(),
-            bico: String(bicoRaw).trim(),
-            valor: valorTotal,
-            litros: volume,
-            preco_unitario: precoUnitario,
-            enc_inicial: encInicial,
-            enc_final: encFinal,
-            ownerId: currentUser.id,
-            linhaPlanilha: i + 1,
-            registro: registroVal ? String(registroVal).trim() : '',
-            origemVolumeVazio,
-            origemTotalVazio,
-            origemPrecoVazio,
-            rawVolumeOriginal: rawVolume,
-            rawTotalOriginal: rawTotal,
-            rawPrecoOriginal: rawPreco
-          };
-          if (isMeaningfulRefueling(newItem)) {
-            newItem.id = createStableId(getRefuelingFingerprint(newItem));
-            result.push(newItem);
-            acceptedRows += 1;
-          }
-        } else if (type === 'comcept') {
-          // Formato Log Concept:
-          // Coluna 2 (index 1): Valor Total (total)
-          // Coluna 3 (index 2): Volume (volume)
-          // Coluna 4 (index 3): Preço Unitário (price)
-          // Coluna 6 (index 5): Data (date)
-          // Coluna 7 (index 6): Hora (hour)
-          // Coluna 9 (index 8): Encerrante Inicial (totals_volume_init)
-          // Coluna 10 (index 9): Encerrante Final (totals_volume_final)
-          // Coluna 13 (index 12): Card Frentista (card_attendant / attendant_name)
-          // Coluna 15 (index 14): Bico (nozzle)
-          const registroVal = findCol(row, values, ['id', 'registro', 'transacao', 'id_abast'], 0);
-          const frentistaId = findCol(row, values, ['attendant_name', 'attendant name', 'card_attendant', 'card attendant', 'id_frentista', 'frentista', 'cartao'], 12) || 'N/A';
-          const bicoRaw = findCol(row, values, ['nozzle', 'bico', 'id_bico', 'bico_id'], 14) || 'B?';
-          const dateRaw = findCol(row, values, ['date', 'data', 'data_hora'], 5);
-          const horaRaw = findCol(row, values, ['hour', 'hora', 'time'], 6);
-
-          let encInicial = parseNumericValue(findCol(row, values, ['totals_volume_init', 'enc_inicial', 'enc inicial', 'enc. inicial', 'inicial'], 8));
-          let encFinal = parseNumericValue(findCol(row, values, ['totals_volume_final', 'enc_final', 'enc final', 'enc. final', 'final'], 9));
-          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'quantidade'], 2));
-          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'price'], 1));
-          let rawPreco = parseNumericValue(findCol(row, values, ['price', 'preco', 'preço', 'preco_unitario'], 3));
-
-          const origemVolumeVazio = rawVolume <= 0;
-          const origemTotalVazio = rawTotal <= 0;
-          const origemPrecoVazio = rawPreco <= 0;
-
-          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
-
-          const newItem: Refueling = {
-            id: '',
-            id_frentista: String(frentistaId).trim(),
-            data: parseDateRobust(dateRaw),
-            hora: String(horaRaw || '').trim(),
-            bico: String(bicoRaw).trim(),
-            valor: valorTotal,
-            litros: volume,
-            preco_unitario: precoUnitario,
-            enc_inicial: encInicial,
-            enc_final: encFinal,
-            ownerId: currentUser.id,
-            linhaPlanilha: i + 1,
-            registro: registroVal ? String(registroVal).trim() : '',
-            origemVolumeVazio,
-            origemTotalVazio,
-            origemPrecoVazio,
-            rawVolumeOriginal: rawVolume,
-            rawTotalOriginal: rawTotal,
-            rawPrecoOriginal: rawPreco
-          };
-          if (isMeaningfulRefueling(newItem)) {
-            newItem.id = createStableId(getRefuelingFingerprint(newItem));
-            result.push(newItem);
-            acceptedRows += 1;
-          }
-        } else if (type === 'hiro') {
-          // Formato Log Hiro:
-          // 1ª coluna (index 0): Número do Bico
-          // 3ª coluna (index 2): Data e Hora (no mesmo campo, ex: "30/03/2026  03:54:00")
-          // 4ª coluna (index 3): Preço de Venda
-          // 5ª coluna (index 4): Litro Vendido (Volume)
-          // 6ª coluna (index 5): Total do Abastecimento (Valor Total)
-          // 7ª coluna (index 6): Encerrante Inicial
-          // 8ª coluna (index 7): Encerrante Final
-          // 10ª coluna (index 9): Cartão do Funcionário
-          const registroVal = findCol(row, values, ['registro', 'id', 'transacao', 'cod'], 1);
-          const bicoRaw = findCol(row, values, ['nozzle', 'bico', 'nozzle_number', 'num_bico'], 0) || 'B?';
-          let dateRaw = findCol(row, values, ['date', 'data', 'data_hora', 'data hora', 'data/hora'], 2);
-          const frentistaId = findCol(row, values, ['card_attendant', 'id_frentista', 'cartao', 'card', 'funcionario'], 9) || 'N/A';
-
-          let encInicial = parseNumericValue(findCol(row, values, ['totals_volume_init', 'enc_inicial', 'enc inicial', 'enc. inicial', 'inicial'], 6));
-          let encFinal = parseNumericValue(findCol(row, values, ['totals_volume_final', 'enc_final', 'enc final', 'enc. final', 'final'], 7));
-          let rawVolume = parseNumericValue(findCol(row, values, ['volume', 'litros', 'litro', 'litro vendido'], 4));
-          let rawTotal = parseNumericValue(findCol(row, values, ['total', 'valor', 'valor_total', 'total do abastecimento'], 5));
-          let rawPreco = parseNumericValue(findCol(row, values, ['price', 'preco', 'preço', 'preco_unitario', 'preco de venda'], 3));
-
-          const origemVolumeVazio = rawVolume <= 0;
-          const origemTotalVazio = rawTotal <= 0;
-          const origemPrecoVazio = rawPreco <= 0;
-
-          const { dateIso, horaStr } = extractDateTime(dateRaw);
-          let horaRaw = findCol(row, values, ['hour', 'hora', 'time']) || horaStr;
-
-          const { volume, valorTotal, precoUnitario } = calculateVolumeAndTotal(rawVolume, rawTotal, rawPreco, encInicial, encFinal);
-
-          const newItem: Refueling = {
-            id: '',
-            id_frentista: String(frentistaId).trim(),
-            data: dateIso,
-            hora: String(horaRaw || '').trim(),
-            bico: String(bicoRaw).trim(),
-            valor: valorTotal,
-            litros: volume,
-            preco_unitario: precoUnitario,
-            enc_inicial: encInicial,
-            enc_final: encFinal,
-            ownerId: currentUser.id,
-            linhaPlanilha: i + 1,
-            registro: registroVal ? String(registroVal).trim() : '',
-            origemVolumeVazio,
-            origemTotalVazio,
-            origemPrecoVazio,
-            rawVolumeOriginal: rawVolume,
-            rawTotalOriginal: rawTotal,
-            rawPrecoOriginal: rawPreco
-          };
-          if (isMeaningfulRefueling(newItem)) {
-            newItem.id = createStableId(getRefuelingFingerprint(newItem));
-            result.push(newItem);
-            acceptedRows += 1;
-          }
-        } else {
-          const nome = values[0] || row['nome'] || row['funcionario'] || '';
-          let cartao1 = "";
-          let cartao2 = "";
-          let cartao3 = "";
-
-          if (values.length === 4) {
-            cartao1 = (values[1] || "").trim();
-            cartao2 = (values[2] || "").trim();
-            cartao3 = (values[3] || "").trim();
-          } else {
-            cartao1 = (values[2] || row['id_cartao_abast'] || row['id cartao abast'] || "").trim();
-            cartao2 = (values[3] || row['id_cartao_abast_2'] || row['id cartao abast 2'] || "").trim();
-            cartao3 = (values[4] || row['id_cartao_abast_3'] || row['id cartao abast 3'] || "").trim();
-          }
-          
-          const cards = [cartao1, cartao2, cartao3].filter(c => c.length > 0);
-          
-          if (nome && cards.length > 0) {
-            cards.forEach(card => {
-              result.push({ id_cartao: card, nome: String(nome).trim() });
-            });
-            acceptedRows += 1;
-          }
-        }
-      } catch (err) { console.warn(`Erro ao processar linha ${i + 1}:`, err); }
-    }
-    lastImportStatsRef.current = { sourceRows: rows.length - 1, acceptedRows };
-    return result;
-  };
-
   const handleImport = () => {
-    if (selectedFile) {
+    if (selectedFile && currentUser) {
       const normalizedFileName = selectedFile.name.toLowerCase();
       const isExcel = normalizedFileName.endsWith('.xlsx') || normalizedFileName.endsWith('.xls');
       const hasSupportedExtension = isExcel || normalizedFileName.endsWith('.csv');
@@ -875,21 +276,23 @@ const App = () => {
 
       setIsImporting(true);
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           let csvText = '';
           if (isExcel) {
-            const data = new Uint8Array(e.target?.result as ArrayBuffer);
-            const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+            const { read: readWorkbook, utils: xlsxUtils } = await import('xlsx');
+            const workbookData = new Uint8Array(e.target?.result as ArrayBuffer);
+            const workbook = readWorkbook(workbookData, { type: 'array', cellDates: true });
             const firstSheetName = workbook.SheetNames[0];
             if (!firstSheetName) throw new Error('A planilha não possui abas.');
             const worksheet = workbook.Sheets[firstSheetName];
-            csvText = XLSX.utils.sheet_to_csv(worksheet, { FS: ';', dateNF: 'dd/mm/yyyy hh:mm:ss' });
+            csvText = xlsxUtils.sheet_to_csv(worksheet, { FS: ';', dateNF: 'dd/mm/yyyy hh:mm:ss' });
           } else {
             csvText = e.target?.result as string;
           }
 
-          const newItems = parseCSV(csvText, importType);
+          const { items: newItems, stats } = parseImportText(csvText, importType, currentUser.id);
+          lastImportStatsRef.current = stats;
           if (newItems.length > 0) {
             if (importType === 'refueling' || importType === 'comcept' || importType === 'hiro') {
               const existingFingerprints = new Set(data.map(getRefuelingFingerprint));
@@ -910,7 +313,7 @@ const App = () => {
             } else {
               setEmployees(prev => {
                 const merged = [...prev];
-                newItems.forEach(item => {
+                (newItems as Employee[]).forEach(item => {
                   const idx = merged.findIndex(e => e.id_cartao === item.id_cartao);
                   if (idx > -1) merged[idx] = item;
                   else merged.push(item);
@@ -1195,7 +598,7 @@ const App = () => {
   }, [filteredData]);
 
   // --- Registros com Inconsistências / Alertas da Planilha ---
-  const inconsistentRecords = useMemo(() => {
+  const inconsistentRecords = useMemo<InconsistentRecord[]>(() => {
     return data.map((item, idx) => {
       const issues: RefuelingIssue[] = [];
       const encIni = parseNumericValue(item.enc_inicial);
@@ -1347,6 +750,11 @@ const App = () => {
       return true;
     });
   }, [inconsistentRecords, inconsistencyFilter, inconsistencySearch, employeeMap]);
+
+  const filteredInconsistencyTotals = useMemo(
+    () => sumRefuelingTotals(filteredInconsistentRecords.map(record => record.item)),
+    [filteredInconsistentRecords]
+  );
 
   const totalInconsistencyPages = Math.ceil(filteredInconsistentRecords.length / inconsistenciesPerPage);
   const paginatedInconsistencies = filteredInconsistentRecords.slice(
@@ -2293,6 +1701,29 @@ const App = () => {
                   </span>
                 )}
               </div>
+
+              {filteredInconsistentRecords.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div className="flex items-center justify-between gap-4 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3">
+                    <div className="flex items-center gap-2 text-blue-700">
+                      <Droplet size={18} />
+                      <span className="text-xs font-black uppercase tracking-wider">Volume dos registros filtrados</span>
+                    </div>
+                    <strong className="whitespace-nowrap text-lg font-black text-blue-700">
+                      {formatNumber(filteredInconsistencyTotals.volume)} L
+                    </strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3">
+                    <div className="flex items-center gap-2 text-indigo-700">
+                      <DollarSign size={18} />
+                      <span className="text-xs font-black uppercase tracking-wider">Total dos registros filtrados</span>
+                    </div>
+                    <strong className="whitespace-nowrap text-lg font-black text-indigo-900">
+                      {formatCurrency(filteredInconsistencyTotals.total)}
+                    </strong>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Tabela de Inconsistências */}
@@ -2548,6 +1979,21 @@ const App = () => {
                         );
                       })}
                     </tbody>
+                    <tfoot>
+                      <tr className="border-t-2 border-indigo-100 bg-indigo-50/70 text-sm">
+                        <td colSpan={7} className="px-5 py-4 text-right font-black uppercase tracking-wider text-indigo-900">
+                          Somatório dos {filteredInconsistentRecords.length} registros filtrados
+                        </td>
+                        <td className="px-5 py-4 whitespace-nowrap font-black text-blue-700">
+                          {formatNumber(filteredInconsistencyTotals.volume)} L
+                        </td>
+                        <td className="px-5 py-4" />
+                        <td className="px-5 py-4 whitespace-nowrap font-black text-indigo-900">
+                          {formatCurrency(filteredInconsistencyTotals.total)}
+                        </td>
+                        <td className="px-5 py-4" />
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
 
