@@ -5,6 +5,7 @@ Painel web para importar, consolidar e auditar logs de abastecimento nos formato
 ## Funcionalidades
 
 - Importação de arquivos CSV, XLS e XLSX.
+- Leitura Excel com SheetJS 0.20.3 da distribuição oficial.
 - Leitura dos layouts Horustech, Concept e Hiro.
 - Cadastro de funcionários e associação de vários cartões ao mesmo frentista.
 - Consolidação por frentista, bico, encerrante e preço de venda.
