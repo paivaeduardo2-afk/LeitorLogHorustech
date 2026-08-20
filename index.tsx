@@ -887,7 +887,7 @@ const App = () => {
         </div>
       </nav>
 
-      <main className="app-content max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+      <main className={`app-content max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 ${activeTab === 'inconsistencias' ? 'audit-wide' : ''}`}>
         <div className="dashboard-hero flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
           <div>
             <p className="hero-eyebrow mb-2">Visão operacional</p>
@@ -1749,9 +1749,9 @@ const App = () => {
                 </p>
               </div>
             ) : (
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+              <div className="audit-table-card bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="audit-table-scroll overflow-x-auto">
+                  <table className="audit-table w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-gray-50 border-b border-gray-200 text-xs font-bold text-gray-600 uppercase tracking-wider">
                         <th className="px-5 py-4">Linha Planilha</th>
@@ -1855,7 +1855,7 @@ const App = () => {
                                   {formatNumber(rec.item.litros)} L
                                 </p>
                                 {rec.hasVolumeVazio && (
-                                  <span className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
+                                  <span className="recalculated-note text-[10px] text-amber-800 bg-amber-50 border border-amber-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
                                     Recalculado: Enc. Final - Inicial
                                   </span>
                                 )}
@@ -1874,7 +1874,7 @@ const App = () => {
                                   {formatCurrency(rec.item.valor)}
                                 </p>
                                 {rec.hasTotalVazio && (
-                                  <span className="text-[10px] text-blue-800 bg-blue-50 border border-blue-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
+                                  <span className="recalculated-note text-[10px] text-blue-800 bg-blue-50 border border-blue-200 font-bold px-1.5 py-0.2 rounded block mt-0.5">
                                     Recalculado: Vol × Preço
                                   </span>
                                 )}
