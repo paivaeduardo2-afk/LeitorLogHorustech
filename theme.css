@@ -210,7 +210,13 @@ select:focus-visible {
 }
 
 .app-content {
+  width: 100%;
   margin-top: 1.75rem !important;
+  transition: max-width 220ms ease;
+}
+
+.app-content.audit-wide {
+  max-width: min(98vw, 112rem) !important;
 }
 
 .dashboard-hero {
@@ -437,6 +443,83 @@ select:focus-visible {
 
 .app-shell tbody tr:hover {
   background-color: #f7fafc;
+}
+
+.audit-table {
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-table th,
+.audit-table td {
+  vertical-align: middle;
+}
+
+.audit-table .recalculated-note {
+  max-width: 9rem;
+  white-space: normal;
+  line-height: 1.25;
+}
+
+@media (min-width: 1280px) {
+  .audit-wide {
+    padding-right: 1rem !important;
+    padding-left: 1rem !important;
+  }
+
+  .audit-table {
+    table-layout: fixed;
+    font-size: 0.78rem;
+  }
+
+  .audit-table th,
+  .audit-table td {
+    padding-right: 0.6rem !important;
+    padding-left: 0.6rem !important;
+  }
+
+  .audit-table th {
+    white-space: normal;
+    line-height: 1.2;
+  }
+
+  .audit-table th:nth-child(1),
+  .audit-table td:nth-child(1) { width: 7.5%; }
+  .audit-table th:nth-child(2),
+  .audit-table td:nth-child(2) { width: 8.5%; }
+  .audit-table th:nth-child(3),
+  .audit-table td:nth-child(3) { width: 5.5%; }
+  .audit-table th:nth-child(4),
+  .audit-table td:nth-child(4) { width: 9%; }
+  .audit-table th:nth-child(5),
+  .audit-table td:nth-child(5) { width: 16%; }
+  .audit-table th:nth-child(6),
+  .audit-table td:nth-child(6),
+  .audit-table th:nth-child(7),
+  .audit-table td:nth-child(7) { width: 9%; }
+  .audit-table th:nth-child(8),
+  .audit-table td:nth-child(8) { width: 10%; }
+  .audit-table th:nth-child(9),
+  .audit-table td:nth-child(9) { width: 7%; }
+  .audit-table th:nth-child(10),
+  .audit-table td:nth-child(10) { width: 10%; }
+  .audit-table th:nth-child(11),
+  .audit-table td:nth-child(11) { width: 6.5%; }
+
+  .audit-table td:nth-child(1),
+  .audit-table td:nth-child(2),
+  .audit-table td:nth-child(3),
+  .audit-table td:nth-child(4),
+  .audit-table td:nth-child(5),
+  .audit-table td:nth-child(11) {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 1279px) {
+  .audit-table {
+    min-width: 74rem;
+  }
 }
 
 .app-shell .custom-scrollbar {
